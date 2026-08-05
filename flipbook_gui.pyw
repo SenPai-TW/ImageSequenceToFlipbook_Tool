@@ -47,8 +47,8 @@ class FlipbookApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("圖片序列／影片轉 Flipbook")
-        self.geometry("960x720")
-        self.minsize(900, 680)
+        self.geometry("960x760")
+        self.minsize(900, 640)
         self.configure(bg="#1f2328")
 
         self.source_var = tk.StringVar()
@@ -77,6 +77,7 @@ class FlipbookApp(tk.Tk):
 
         self._configure_style()
         self._build_ui()
+        self.after_idle(self._fit_initial_window)
         for variable in (
             self.cols_var, self.rows_var,
             self.video_start_var, self.video_end_var,
@@ -87,11 +88,30 @@ class FlipbookApp(tk.Tk):
     def _configure_style(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        bg, panel, field = "#1f2328", "#292f35", "#171b20"
-        text, muted, border, accent = "#e1e5e8", "#9aa3aa", "#49525a", "#5f96c7"
-        title = ("Microsoft JhengHei UI", 18, "bold")
-        base = ("Microsoft JhengHei UI", 10)
-        section_title = ("Microsoft JhengHei UI", 11, "bold")
+        bg, panel, field = "#1f2328", "#1f2328", "#171b20"
+        text, muted, border, accent = "#e4e9ed", "#98a2aa", "#46515a", "#5f96c7"
+        family = "Microsoft JhengHei UI"
+        title = (family, 22, "bold")
+        base = (family, 10)
+        section_title = (family, 16, "bold")
+
+        # Large stretched images made live window resizing expensive. Sections
+        # now use a lightweight borderless layout; rounded images are limited to
+        # the small input controls where their redraw cost is negligible.
+        style.layout("Section.TLabelframe", [
+            ("Labelframe.padding", {"sticky": "nsew"}),
+        ])
+
+        # Extra transparent space on the right keeps the arrow away from the edge.
+        arrow_image = tk.PhotoImage(master=self, width=23, height=11)
+        arrow_color = "#b8c1c8"
+        for y, half_width in enumerate((5, 4, 3, 2, 1)):
+            left = 8 - half_width
+            right = 9 + half_width
+            arrow_image.put(arrow_color, to=(left, y + 3, right, y + 4))
+
+        self._combo_arrow_image = arrow_image
+        style.element_create("FlatCombo.arrow", "image", arrow_image, sticky="e")
 
         style.configure("TFrame", background=bg)
         style.configure("Panel.TFrame", background=panel)
@@ -100,49 +120,109 @@ class FlipbookApp(tk.Tk):
         style.configure("Title.TLabel", background=bg, foreground="#f2f5f7", font=title)
         style.configure("Muted.TLabel", background=bg, foreground=muted, font=base)
         style.configure("Panel.TLabel", background=panel, foreground=text, font=base)
-        style.configure("Hint.Panel.TLabel", background=panel, foreground=muted, font=("Microsoft JhengHei UI", 9))
-        style.configure("Section.TLabelframe", background=panel, foreground=text, bordercolor=border,
-                        lightcolor=border, darkcolor=border, relief="solid", borderwidth=1)
-        style.configure("Section.TLabelframe.Label", background=panel, foreground="#f0f3f5", font=section_title)
-        style.configure("InfoTitle.Panel.TLabel", background=panel, foreground="#d8edf9", font=("Microsoft JhengHei UI", 10, "bold"))
-        style.configure("WarningIcon.TLabel", background="#c07d38", foreground="#fff5ea", padding=(6, 1), font=("Arial", 9, "bold"))
-        style.configure("WarningText.TLabel", background=panel, foreground="#e0b783", font=("Microsoft JhengHei UI", 9))
+        style.configure("Hint.Panel.TLabel", background=panel, foreground=muted, font=(family, 9))
+        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=0)
+        style.configure("Section.TLabelframe.Label", background=bg, foreground="#f1f5f8", font=section_title)
+        style.configure("InfoTitle.Panel.TLabel", background=panel, foreground="#cfe8f7", font=(family, 10, "bold"))
+        style.configure("WarningIcon.TLabel", background="#c07d38", foreground="#fff5ea", padding=(6, 1), font=(family, 9, "bold"))
+        style.configure("WarningText.TLabel", background=panel, foreground="#e0b783", font=(family, 9))
         style.configure("TButton", background="#363e45", foreground=text, bordercolor=border,
                         lightcolor=border, darkcolor=border, padding=(12, 7), font=base)
         style.map("TButton", background=[("active", "#4a545e"), ("disabled", "#30363b")],
                   foreground=[("disabled", "#747d85")])
+        style.configure("Browse.TButton", background="#363e45", foreground=text,
+                        bordercolor="#363e45", lightcolor="#363e45", darkcolor="#363e45",
+                        relief="flat", borderwidth=0, padding=(12, 7), font=base)
+        style.map("Browse.TButton", background=[("active", "#4a545e"), ("disabled", "#30363b")],
+                  foreground=[("disabled", "#747d85")])
         style.configure("Primary.TButton", background=accent, foreground="#f5fbff",
-                        bordercolor="#7fb0d8", lightcolor="#7fb0d8", darkcolor="#456f91",
-                        padding=(14, 12), font=("Microsoft JhengHei UI", 11, "bold"))
+                        bordercolor=accent, lightcolor=accent, darkcolor=accent,
+                        relief="flat", borderwidth=0, padding=(14, 12),
+                        font=("Microsoft JhengHei UI", 11, "bold"))
         style.map("Primary.TButton", background=[("active", "#72acd9"), ("disabled", "#405565")])
+        style.configure("SecondaryAction.TButton", background="#363e45", foreground=text,
+                        bordercolor="#363e45", lightcolor="#363e45", darkcolor="#363e45",
+                        relief="flat", borderwidth=0, padding=(12, 13), font=(family, 10))
+        style.map("SecondaryAction.TButton",
+                  background=[("active", "#4a545e"), ("disabled", "#30363b")],
+                  foreground=[("disabled", "#747d85")])
         style.configure("TEntry", fieldbackground=field, foreground=text, insertcolor=text,
-                        bordercolor=border, lightcolor=border, darkcolor=border,
-                        padding=(8, 7), font=base)
-        style.configure("TSpinbox", fieldbackground=field, foreground=text, bordercolor=border,
-                        lightcolor=border, darkcolor=border, background="#303840",
-                        arrowcolor="#adb5bb", arrowsize=13, padding=(8, 6), font=base)
-        style.configure("TCombobox", fieldbackground=field, background="#303840", foreground=text,
-                        bordercolor=border, lightcolor=border, darkcolor=border,
-                        arrowcolor="#adb5bb", arrowsize=13, padding=(8, 6), font=base)
-        style.map("TCombobox", fieldbackground=[("readonly", field)], foreground=[("readonly", text)])
+                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
+                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
+        style.map("TEntry",
+                  fieldbackground=[("disabled", field), ("focus", field), ("!focus", field)],
+                  background=[("disabled", field), ("focus", field), ("!focus", field)],
+                  foreground=[("disabled", muted), ("!disabled", text)])
+        style.layout("TEntry", [
+            ("Entry.padding", {"sticky": "nsew", "children": [
+                ("Entry.textarea", {"sticky": "nsew"}),
+            ]}),
+        ])
+        style.configure("TSpinbox", fieldbackground=field, foreground=text, insertcolor=text,
+                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
+                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
+        style.map("TSpinbox",
+                  fieldbackground=[("disabled", field), ("focus", field), ("!focus", field)],
+                  background=[("disabled", field), ("focus", field), ("!focus", field)],
+                  foreground=[("disabled", muted), ("!disabled", text)])
+        style.layout("TSpinbox", [
+            ("Spinbox.padding", {"sticky": "nsew", "children": [
+                ("Spinbox.textarea", {"sticky": "nsew"}),
+            ]}),
+        ])
+        style.configure("TCombobox", fieldbackground=field, foreground=text,
+                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
+                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
+        style.layout("TCombobox", [
+            ("FlatCombo.arrow", {"side": "right", "sticky": "e"}),
+            ("Combobox.padding", {"sticky": "nsew", "children": [
+                ("Combobox.textarea", {"sticky": "nsew"}),
+            ]}),
+        ])
+        style.map("TCombobox",
+                  fieldbackground=[("disabled", field), ("readonly", field), ("focus", field), ("!focus", field)],
+                  background=[("disabled", field), ("readonly", field), ("focus", field), ("!focus", field)],
+                  foreground=[("disabled", muted), ("readonly", text), ("!disabled", text)])
+        self.option_add("*TCombobox*Listbox.background", field)
+        self.option_add("*TCombobox*Listbox.foreground", text)
+        self.option_add("*TCombobox*Listbox.selectBackground", accent)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#f5fbff")
+        self.option_add("*TCombobox*Listbox.font", base)
         style.configure("Horizontal.TProgressbar", background=accent, troughcolor=field,
-                        bordercolor=border, lightcolor=accent, darkcolor=accent, thickness=13)
-        style.configure("TCheckbutton", background=panel, foreground=text, font=("Microsoft JhengHei UI", 9))
+                        bordercolor=field, lightcolor=accent, darkcolor=accent,
+                        relief="flat", borderwidth=0, thickness=13)
+        style.configure("TCheckbutton", background=panel, foreground=text, font=(family, 9))
         style.map("TCheckbutton", background=[("active", panel)], foreground=[("disabled", "#777f85")])
 
     def _section(self, parent: ttk.Frame, title: str, row: int) -> ttk.Labelframe:
-        section = ttk.Labelframe(parent, text=f"  {title}  ", style="Section.TLabelframe", padding=(16, 14, 16, 14))
-        section.grid(row=row, column=0, sticky="ew", pady=(0, 13))
+        section = ttk.Labelframe(parent, text=title, style="Section.TLabelframe", padding=(0, 14, 0, 14))
+        section.grid(row=row, column=0, sticky="ew", pady=(0, 16))
         section.columnconfigure(1, weight=1)
         return section
 
+    def _fit_initial_window(self) -> None:
+        """Size for the taller video layout, even when image mode starts selected."""
+        self.update_idletasks()
+        video_was_visible = self.video_options.winfo_ismapped()
+        if not video_was_visible:
+            self.video_options.grid()
+            self.update_idletasks()
+        requested = self.winfo_reqheight() + 16
+        if not video_was_visible:
+            self.video_options.grid_remove()
+            self.update_idletasks()
+        available = max(640, self.winfo_screenheight() - 96)
+        height = min(requested, available)
+        width = max(960, self.winfo_reqwidth())
+        self.geometry(f"{width}x{height}")
+
     def _build_ui(self) -> None:
-        main = ttk.Frame(self, padding=(22, 18, 22, 18))
+        main = ttk.Frame(self, padding=(20, 14, 20, 12))
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
 
         ttk.Label(main, text="Flipbook Texture Sheet Generator", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 16))
+        ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 30))
 
         source_section = self._section(main, "來源與輸出", 2)
         source_section.columnconfigure(1, weight=1)
@@ -153,13 +233,13 @@ class FlipbookApp(tk.Tk):
         )
         source_type.grid(row=0, column=1, sticky="ew", pady=5)
         source_type.bind("<<ComboboxSelected>>", self._source_type_changed)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11).grid(row=0, column=2, padx=(10, 0), pady=5)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11, style="Browse.TButton").grid(row=0, column=2, padx=(10, 0), pady=5)
 
         ttk.Label(source_section, text="來源路徑", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
         ttk.Entry(source_section, textvariable=self.source_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Label(source_section, text="儲存位置", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
         ttk.Entry(source_section, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=5)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11).grid(row=2, column=2, padx=(10, 0), pady=5)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11, style="Browse.TButton").grid(row=2, column=2, padx=(10, 0), pady=5)
         ttk.Label(source_section, textvariable=self.count_var, style="Hint.Panel.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(9, 0))
 
         self.video_options = self._section(main, "時間範圍與畫面適配", 3)
@@ -182,7 +262,7 @@ class FlipbookApp(tk.Tk):
         ttk.Spinbox(settings, from_=1, to=999, textvariable=self.rows_var).grid(row=0, column=3, sticky="ew", pady=5)
         ttk.Label(settings, text="單格尺寸", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
         ttk.Spinbox(settings, from_=1, to=8192, textvariable=self.size_var).grid(row=1, column=1, sticky="ew", padx=(0, 24), pady=5)
-        ttk.Label(settings, text="px", style="Hint.Panel.TLabel").grid(row=1, column=2, sticky="w", pady=5)
+        ttk.Label(settings, text="px²", style="Hint.Panel.TLabel").grid(row=1, column=2, sticky="w", pady=5)
         ttk.Label(settings, text="通道模式", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
         mode_combo = ttk.Combobox(
             settings, textvariable=self.mode_var, values=tuple(MODE_LABELS),
@@ -200,7 +280,7 @@ class FlipbookApp(tk.Tk):
         self.fill_check.grid_remove()
 
         self.detail_canvas = tk.Canvas(
-            settings, width=860, height=88, bg="#292f35",
+            settings, width=860, height=70, bg="#1f2328",
             highlightthickness=0, bd=0,
         )
         self.detail_canvas.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 0))
@@ -209,18 +289,22 @@ class FlipbookApp(tk.Tk):
             font=("Microsoft JhengHei UI", 10, "bold"),
         )
         self.detail_text_id = self.detail_canvas.create_text(
-            12, 43, text=self.detail_var.get(), anchor="nw", fill="#9aa3aa",
+            12, 40, text=self.detail_var.get(), anchor="nw", fill="#9aa3aa",
             font=("Microsoft JhengHei UI", 9), width=820,
         )
 
         action = self._section(main, "執行與處理狀態", 5)
         action.columnconfigure(0, weight=1)
+        action.columnconfigure(1, weight=0)
         self.progress = ttk.Progressbar(action, mode="indeterminate")
         self.progress.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Label(action, textvariable=self.status_var, style="Hint.Panel.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
         self.run_button = ttk.Button(action, text="▦  執行生成 Flipbook 網格圖", style="Primary.TButton", command=self._start)
         self.run_button.grid(row=2, column=0, sticky="ew", padx=(0, 10))
-        self.output_folder_button = ttk.Button(action, text="開啟輸出資料夾", command=self._open_last_output_folder, state="disabled")
+        self.output_folder_button = ttk.Button(
+            action, text="開啟輸出資料夾", command=self._open_last_output_folder,
+            state="disabled", style="SecondaryAction.TButton", width=12,
+        )
         self.output_folder_button.grid(row=2, column=1, sticky="ew")
 
     def _choose_source(self) -> None:

@@ -47,9 +47,9 @@ class FlipbookApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("圖片序列／影片轉 Flipbook")
-        self.geometry("900x590")
-        self.minsize(840, 570)
-        self.configure(bg="#202428")
+        self.geometry("960x720")
+        self.minsize(900, 680)
+        self.configure(bg="#1f2328")
 
         self.source_var = tk.StringVar()
         self.source_type_var = tk.StringVar(value=SOURCE_TYPES[0])
@@ -66,6 +66,10 @@ class FlipbookApp(tk.Tk):
         self.capacity_var = tk.StringVar(value="目前設定總網格數：12 × 10 = 120 格")
         self.detail_var = tk.StringVar(value="完整保留 Alpha 透明去背通道背景輸出。")
         self.status_var = tk.StringVar(value="就緒")
+        self.detail_canvas: tk.Canvas | None = None
+        self.detail_text_id: int | None = None
+        self.output_folder_button: ttk.Button | None = None
+        self._last_output_path: Path | None = None
         self._busy = False
         self._source_count = 0
         self._video_metadata: dict[str, object] | None = None
@@ -74,137 +78,150 @@ class FlipbookApp(tk.Tk):
         self._configure_style()
         self._build_ui()
         for variable in (
-            self.cols_var, self.rows_var, self.mode_var,
+            self.cols_var, self.rows_var,
             self.video_start_var, self.video_end_var,
         ):
             variable.trace_add("write", self._settings_changed)
+        self.mode_var.trace_add("write", self._mode_changed)
 
     def _configure_style(self) -> None:
         style = ttk.Style(self)
         style.theme_use("clam")
-        bg, panel, field = "#202428", "#282d31", "#181d21"
-        text, muted, border, accent = "#cdd1d4", "#92999f", "#454c51", "#568bb5"
+        bg, panel, field = "#1f2328", "#292f35", "#171b20"
+        text, muted, border, accent = "#e1e5e8", "#9aa3aa", "#49525a", "#5f96c7"
+        title = ("Microsoft JhengHei UI", 18, "bold")
+        base = ("Microsoft JhengHei UI", 10)
+        section_title = ("Microsoft JhengHei UI", 11, "bold")
+
         style.configure("TFrame", background=bg)
-        style.configure("Panel.TFrame", background=panel, relief="solid", borderwidth=1,
-                        bordercolor=border, lightcolor=border, darkcolor=border)
-        style.configure("PanelFlat.TFrame", background=panel, relief="flat", borderwidth=0)
-        style.configure("TLabel", background=bg, foreground=text, font=("Microsoft JhengHei UI", 10))
-        style.configure("Muted.TLabel", foreground=muted, font=("Microsoft JhengHei UI", 10))
-        style.configure("Panel.TLabel", background=panel, foreground=text, font=("Microsoft JhengHei UI", 10))
-        style.configure("InfoTitle.Panel.TLabel", font=("Microsoft JhengHei UI", 10, "bold"))
-        style.configure("WarningIcon.TLabel", background=accent, foreground="#eef3f6", padding=(5, 1), font=("Arial", 9, "bold"))
-        style.configure("WarningText.TLabel", background=panel, foreground="#adb4b9", font=("Microsoft JhengHei UI", 9))
-        style.configure("TButton", background="#343a3f", foreground=text, bordercolor=border,
-                        lightcolor=border, darkcolor=border, padding=(11, 7), font=("Microsoft JhengHei UI", 10))
-        style.map("TButton", background=[("active", "#4a535a"), ("disabled", "#30363b")])
-        style.configure("Primary.TButton", background=accent, foreground="#e8edf1",
-                        bordercolor="#6f9abd", lightcolor="#6f9abd", darkcolor="#456f91",
-                        padding=(14, 11), font=("Microsoft JhengHei UI", 11, "bold"))
-        style.map("Primary.TButton", background=[("active", "#6aa2cf"), ("disabled", "#405565")])
+        style.configure("Panel.TFrame", background=panel)
+        style.configure("PanelFlat.TFrame", background=panel)
+        style.configure("TLabel", background=bg, foreground=text, font=base)
+        style.configure("Title.TLabel", background=bg, foreground="#f2f5f7", font=title)
+        style.configure("Muted.TLabel", background=bg, foreground=muted, font=base)
+        style.configure("Panel.TLabel", background=panel, foreground=text, font=base)
+        style.configure("Hint.Panel.TLabel", background=panel, foreground=muted, font=("Microsoft JhengHei UI", 9))
+        style.configure("Section.TLabelframe", background=panel, foreground=text, bordercolor=border,
+                        lightcolor=border, darkcolor=border, relief="solid", borderwidth=1)
+        style.configure("Section.TLabelframe.Label", background=panel, foreground="#f0f3f5", font=section_title)
+        style.configure("InfoTitle.Panel.TLabel", background=panel, foreground="#d8edf9", font=("Microsoft JhengHei UI", 10, "bold"))
+        style.configure("WarningIcon.TLabel", background="#c07d38", foreground="#fff5ea", padding=(6, 1), font=("Arial", 9, "bold"))
+        style.configure("WarningText.TLabel", background=panel, foreground="#e0b783", font=("Microsoft JhengHei UI", 9))
+        style.configure("TButton", background="#363e45", foreground=text, bordercolor=border,
+                        lightcolor=border, darkcolor=border, padding=(12, 7), font=base)
+        style.map("TButton", background=[("active", "#4a545e"), ("disabled", "#30363b")],
+                  foreground=[("disabled", "#747d85")])
+        style.configure("Primary.TButton", background=accent, foreground="#f5fbff",
+                        bordercolor="#7fb0d8", lightcolor="#7fb0d8", darkcolor="#456f91",
+                        padding=(14, 12), font=("Microsoft JhengHei UI", 11, "bold"))
+        style.map("Primary.TButton", background=[("active", "#72acd9"), ("disabled", "#405565")])
         style.configure("TEntry", fieldbackground=field, foreground=text, insertcolor=text,
                         bordercolor=border, lightcolor=border, darkcolor=border,
-                        padding=(8, 6), font=("Microsoft JhengHei UI", 10))
+                        padding=(8, 7), font=base)
         style.configure("TSpinbox", fieldbackground=field, foreground=text, bordercolor=border,
-                        lightcolor=border, darkcolor=border, background="#30363b",
-                        arrowcolor="#9ca3a8", arrowsize=13, padding=(8, 5),
-                        relief="flat", font=("Microsoft JhengHei UI", 10))
-        style.map("TSpinbox", background=[("active", "#3a4146")],
-                  arrowcolor=[("disabled", "#596066"), ("active", "#c2c7ca")])
-        style.configure("TCombobox", fieldbackground=field, background="#343b40", foreground=text,
+                        lightcolor=border, darkcolor=border, background="#303840",
+                        arrowcolor="#adb5bb", arrowsize=13, padding=(8, 6), font=base)
+        style.configure("TCombobox", fieldbackground=field, background="#303840", foreground=text,
                         bordercolor=border, lightcolor=border, darkcolor=border,
-                        arrowcolor="#a2a8ac", arrowsize=13, padding=(8, 5),
-                        font=("Microsoft JhengHei UI", 10))
+                        arrowcolor="#adb5bb", arrowsize=13, padding=(8, 6), font=base)
         style.map("TCombobox", fieldbackground=[("readonly", field)], foreground=[("readonly", text)])
         style.configure("Horizontal.TProgressbar", background=accent, troughcolor=field,
                         bordercolor=border, lightcolor=accent, darkcolor=accent, thickness=13)
         style.configure("TCheckbutton", background=panel, foreground=text, font=("Microsoft JhengHei UI", 9))
         style.map("TCheckbutton", background=[("active", panel)], foreground=[("disabled", "#777f85")])
 
-    def _build_ui(self) -> None:
-        main = ttk.Frame(self, padding=16)
-        main.pack(fill="both", expand=True)
-        main.columnconfigure(1, weight=1)
+    def _section(self, parent: ttk.Frame, title: str, row: int) -> ttk.Labelframe:
+        section = ttk.Labelframe(parent, text=f"  {title}  ", style="Section.TLabelframe", padding=(16, 14, 16, 14))
+        section.grid(row=row, column=0, sticky="ew", pady=(0, 13))
+        section.columnconfigure(1, weight=1)
+        return section
 
-        ttk.Label(main, text="來源：").grid(row=0, column=0, sticky="w", pady=5, padx=(0, 12))
-        source_line = ttk.Frame(main)
-        source_line.grid(row=0, column=1, sticky="ew", pady=3)
-        source_line.columnconfigure(1, weight=1)
+    def _build_ui(self) -> None:
+        main = ttk.Frame(self, padding=(22, 18, 22, 18))
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=1)
+
+        ttk.Label(main, text="Flipbook Texture Sheet Generator", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 16))
+
+        source_section = self._section(main, "來源與輸出", 2)
+        source_section.columnconfigure(1, weight=1)
+        ttk.Label(source_section, text="來源類型", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
         source_type = ttk.Combobox(
-            source_line, textvariable=self.source_type_var,
+            source_section, textvariable=self.source_type_var,
             values=SOURCE_TYPES, state="readonly", width=18,
         )
-        source_type.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        source_type.grid(row=0, column=1, sticky="ew", pady=5)
         source_type.bind("<<ComboboxSelected>>", self._source_type_changed)
-        ttk.Entry(source_line, textvariable=self.source_var).grid(row=0, column=1, sticky="ew")
-        ttk.Button(main, text="瀏覽…", command=self._choose_source, width=10).grid(row=0, column=2, padx=(10, 0), pady=3)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11).grid(row=0, column=2, padx=(10, 0), pady=5)
 
-        ttk.Label(main, text="儲存位置：").grid(row=1, column=0, sticky="w", pady=5, padx=(0, 12))
-        ttk.Entry(main, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", pady=3)
-        ttk.Button(main, text="瀏覽…", command=self._choose_output, width=10).grid(row=1, column=2, padx=(10, 0), pady=3)
+        ttk.Label(source_section, text="來源路徑", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Entry(source_section, textvariable=self.source_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Label(source_section, text="儲存位置", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Entry(source_section, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=5)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11).grid(row=2, column=2, padx=(10, 0), pady=5)
+        ttk.Label(source_section, textvariable=self.count_var, style="Hint.Panel.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(9, 0))
 
-        ttk.Label(main, textvariable=self.count_var, style="Muted.TLabel").grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(10, 12)
-        )
-
-        self.video_options = ttk.Frame(main, style="Panel.TFrame", padding=12)
-        self.video_options.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 9))
-        self.video_options.columnconfigure(1, weight=1)
-        self.video_options.columnconfigure(3, weight=1)
-        self.video_options.columnconfigure(5, weight=1)
-        ttk.Label(self.video_options, text="開始秒數", style="Panel.TLabel").grid(row=0, column=0, padx=(2, 9))
-        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_start_var).grid(row=0, column=1, sticky="ew", padx=(0, 20))
-        ttk.Label(self.video_options, text="結束秒數", style="Panel.TLabel").grid(row=0, column=2, padx=(0, 9))
-        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_end_var).grid(row=0, column=3, sticky="ew", padx=(0, 20))
-        ttk.Label(self.video_options, text="畫面適配", style="Panel.TLabel").grid(row=0, column=4, padx=(0, 9))
-        ttk.Combobox(
-            self.video_options, textvariable=self.video_fit_var,
-            values=tuple(VIDEO_FIT_LABELS), state="readonly", width=15,
-        ).grid(row=0, column=5, sticky="ew")
+        self.video_options = self._section(main, "時間範圍與畫面適配", 3)
+        for column in (1, 3, 5):
+            self.video_options.columnconfigure(column, weight=1)
+        ttk.Label(self.video_options, text="開始秒數", style="Panel.TLabel").grid(row=0, column=0, padx=(0, 9), pady=2)
+        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_start_var).grid(row=0, column=1, sticky="ew", padx=(0, 20), pady=2)
+        ttk.Label(self.video_options, text="結束秒數", style="Panel.TLabel").grid(row=0, column=2, padx=(0, 9), pady=2)
+        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_end_var).grid(row=0, column=3, sticky="ew", padx=(0, 20), pady=2)
+        ttk.Label(self.video_options, text="畫面適配", style="Panel.TLabel").grid(row=0, column=4, padx=(0, 9), pady=2)
+        ttk.Combobox(self.video_options, textvariable=self.video_fit_var, values=tuple(VIDEO_FIT_LABELS), state="readonly", width=15).grid(row=0, column=5, sticky="ew", pady=2)
         self.video_options.grid_remove()
 
-        settings = ttk.Frame(main, style="Panel.TFrame", padding=12)
-        settings.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        settings = self._section(main, "Flipbook 設定", 4)
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(3, weight=1)
-
-        ttk.Label(settings, text="欄數 (Cols)", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(2, 12), pady=4)
-        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.cols_var).grid(row=0, column=1, sticky="ew", padx=(0, 26), pady=4)
-        ttk.Label(settings, text="列數 (Rows)", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 12), pady=4)
-        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.rows_var).grid(row=0, column=3, sticky="ew", padx=(0, 2), pady=4)
+        ttk.Label(settings, text="欄數 (Cols)", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.cols_var).grid(row=0, column=1, sticky="ew", padx=(0, 24), pady=5)
+        ttk.Label(settings, text="列數 (Rows)", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.rows_var).grid(row=0, column=3, sticky="ew", pady=5)
+        ttk.Label(settings, text="單格尺寸", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=8192, textvariable=self.size_var).grid(row=1, column=1, sticky="ew", padx=(0, 24), pady=5)
+        ttk.Label(settings, text="px", style="Hint.Panel.TLabel").grid(row=1, column=2, sticky="w", pady=5)
+        ttk.Label(settings, text="通道模式", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        mode_combo = ttk.Combobox(
+            settings, textvariable=self.mode_var, values=tuple(MODE_LABELS),
+            state="readonly", width=22,
+        )
+        mode_combo.grid(row=2, column=1, columnspan=3, sticky="w", pady=5)
 
         capacity_line = ttk.Frame(settings, style="PanelFlat.TFrame")
-        capacity_line.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(12, 7), padx=2)
-        ttk.Label(capacity_line, textvariable=self.capacity_var, style="Panel.TLabel").pack(side="left")
+        capacity_line.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(12, 6))
+        ttk.Label(capacity_line, textvariable=self.capacity_var, style="Hint.Panel.TLabel").pack(side="left")
         self.warning_icon = ttk.Label(capacity_line, text="!", style="WarningIcon.TLabel")
-        self.warning_text = ttk.Label(
-            capacity_line,
-            text="需求的圖片總格數不足，多的格數會被刪掉",
-            style="WarningText.TLabel",
-        )
-
-        self.fill_check = ttk.Checkbutton(
-            settings,
-            text="用最後一格補齊剩餘空格",
-            variable=self.fill_empty_var,
-        )
-        self.fill_check.grid(row=2, column=0, columnspan=4, sticky="w", padx=2, pady=(0, 7))
+        self.warning_text = ttk.Label(capacity_line, text="需求的圖片總格數不足，多的格數會被刪掉", style="WarningText.TLabel")
+        self.fill_check = ttk.Checkbutton(settings, text="用最後一格補齊剩餘空格", variable=self.fill_empty_var)
+        self.fill_check.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 9))
         self.fill_check.grid_remove()
 
-        ttk.Label(settings, text="單格尺寸(pixel²)", style="Panel.TLabel").grid(row=3, column=0, sticky="w", padx=(2, 12), pady=4)
-        ttk.Spinbox(settings, from_=1, to=8192, textvariable=self.size_var).grid(row=3, column=1, sticky="ew", padx=(0, 26), pady=4)
-        ttk.Label(settings, text="通道模式", style="Panel.TLabel").grid(row=3, column=2, sticky="w", padx=(0, 12), pady=4)
-        ttk.Combobox(settings, textvariable=self.mode_var, values=tuple(MODE_LABELS), state="readonly").grid(row=3, column=3, sticky="ew", padx=(0, 2), pady=4)
+        self.detail_canvas = tk.Canvas(
+            settings, width=860, height=88, bg="#292f35",
+            highlightthickness=0, bd=0,
+        )
+        self.detail_canvas.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        self.detail_canvas.create_text(
+            12, 14, text="ⓘ  模式說明", anchor="nw", fill="#d8edf9",
+            font=("Microsoft JhengHei UI", 10, "bold"),
+        )
+        self.detail_text_id = self.detail_canvas.create_text(
+            12, 43, text=self.detail_var.get(), anchor="nw", fill="#9aa3aa",
+            font=("Microsoft JhengHei UI", 9), width=820,
+        )
 
-        info = ttk.Frame(settings, style="Panel.TFrame", padding=12)
-        info.grid(row=4, column=0, columnspan=4, sticky="ew", padx=2, pady=(12, 2))
-        ttk.Label(info, text="ⓘ　模式說明", style="InfoTitle.Panel.TLabel").pack(anchor="w")
-        ttk.Label(info, textvariable=self.detail_var, style="Panel.TLabel", wraplength=800).pack(anchor="w", pady=(9, 0))
-
-        self.progress = ttk.Progressbar(main, mode="indeterminate")
-        self.progress.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(14, 7))
-        ttk.Label(main, textvariable=self.status_var).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self.run_button = ttk.Button(main, text="▦　執行生成 Flipbook 網格圖", style="Primary.TButton", command=self._start)
-        self.run_button.grid(row=7, column=0, columnspan=3, sticky="ew")
+        action = self._section(main, "執行與處理狀態", 5)
+        action.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(action, mode="indeterminate")
+        self.progress.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(action, textvariable=self.status_var, style="Hint.Panel.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self.run_button = ttk.Button(action, text="▦  執行生成 Flipbook 網格圖", style="Primary.TButton", command=self._start)
+        self.run_button.grid(row=2, column=0, sticky="ew", padx=(0, 10))
+        self.output_folder_button = ttk.Button(action, text="開啟輸出資料夾", command=self._open_last_output_folder, state="disabled")
+        self.output_folder_button.grid(row=2, column=1, sticky="ew")
 
     def _choose_source(self) -> None:
         if self.source_type_var.get() == SOURCE_TYPES[0]:
@@ -322,12 +339,19 @@ class FlipbookApp(tk.Tk):
         self.after_idle(self._update_capacity)
         if self.source_type_var.get() != SOURCE_TYPES[0]:
             self.after_idle(self._update_video_range_count)
+
+    def _mode_changed(self, *_args: object) -> None:
         descriptions = {
             "RGBA（透明）": "完整保留 Alpha 透明去背通道背景輸出。適合透明粒子、網格特效圖。",
             "RGB Straight": "完整保留圖片RGB資訊，但將Alpha設為完全不透明。",
             "RGB Premultiplied": "將圖片合成至黑色背景，會遺失原本透明部分的RGB資訊。",
         }
-        self.detail_var.set(descriptions.get(self.mode_var.get(), ""))
+        self._set_detail_text(descriptions.get(self.mode_var.get(), ""))
+
+    def _set_detail_text(self, text: str) -> None:
+        self.detail_var.set(text)
+        if self.detail_canvas is not None and self.detail_text_id is not None:
+            self.detail_canvas.itemconfigure(self.detail_text_id, text=text)
 
     def _update_capacity(self) -> None:
         try:
@@ -387,6 +411,9 @@ class FlipbookApp(tk.Tk):
         self.run_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set("正在產生 Flipbook，請稍候……")
+        self._last_output_path = None
+        if self.output_folder_button is not None:
+            self.output_folder_button.configure(state="disabled")
         mode = MODE_LABELS[self.mode_var.get()]
         fill_empty = self.fill_empty_var.get()
         threading.Thread(
@@ -427,8 +454,15 @@ class FlipbookApp(tk.Tk):
     def _finished_ok(self, path: str, count: int) -> None:
         self._finish_common()
         self.status_var.set(f"完成：已輸出 {count} 格影格")
-        if messagebox.askyesno("完成", f"Flipbook 已成功產生：\n{path}\n\n是否開啟輸出資料夾？"):
-            os.startfile(str(Path(path).parent))
+        self._last_output_path = Path(path)
+        if self.output_folder_button is not None:
+            self.output_folder_button.configure(state="normal")
+        messagebox.showinfo("完成", f"Flipbook 已成功產生：\n{path}")
+
+    def _open_last_output_folder(self) -> None:
+        if self._last_output_path is None:
+            return
+        os.startfile(str(self._last_output_path.parent))
 
 
 if __name__ == "__main__":

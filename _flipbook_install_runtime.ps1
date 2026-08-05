@@ -4,7 +4,9 @@ $ProgressPreference = "SilentlyContinue"
 $packageRoot = $PSScriptRoot
 $offlinePython = Join-Path $packageRoot "installers\python-3.11.8-amd64.exe"
 $offlinePillow = Join-Path $packageRoot "installers\pillow-12.3.0-cp311-cp311-win_amd64.whl"
+$offlineImageioFfmpeg = Join-Path $packageRoot "installers\imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl"
 $downloadedInstaller = Join-Path $env:TEMP "flipbook-python-latest-amd64.exe"
+$selectedPython = $null
 
 function Get-Python3Command {
     $commands = @()
@@ -79,6 +81,7 @@ function Install-OfflineFallback {
     Write-Host "`n線上安裝未完成，改用內附的離線安裝檔。" -ForegroundColor Yellow
     if (-not (Test-Path -LiteralPath $offlinePython)) { throw "找不到 $offlinePython" }
     if (-not (Test-Path -LiteralPath $offlinePillow)) { throw "找不到 $offlinePillow" }
+    if (-not (Test-Path -LiteralPath $offlineImageioFfmpeg)) { throw "找不到 $offlineImageioFfmpeg" }
 
     $process = Start-Process -FilePath $offlinePython -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_pip=1" -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "離線 Python 安裝失敗，結束碼：$($process.ExitCode)" }
@@ -87,8 +90,9 @@ function Install-OfflineFallback {
     if (-not $python) { throw "Python 3.11.8 安裝完成，但找不到 Python 3 執行檔。" }
     $executable = $python[0]
     $prefixArguments = @($python | Select-Object -Skip 1)
-    & $executable @prefixArguments -m pip install --no-index --force-reinstall $offlinePillow
-    if ($LASTEXITCODE -ne 0) { throw "離線 Pillow 安裝失敗。" }
+    & $executable @prefixArguments -m pip install --no-index --force-reinstall $offlinePillow $offlineImageioFfmpeg | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "離線 Pillow 或 imageio-ffmpeg 安裝失敗。" }
+    return ,$python
 }
 
 try {
@@ -96,17 +100,19 @@ try {
         Install-LatestPython
         $python = Get-Python3Command
         if (-not $python) { throw "Python 安裝完成，但找不到 Python 3 執行檔。" }
-        Write-Host "正在安裝最新版 Pillow..."
+        Write-Host "正在安裝最新版 Pillow 與影片解碼元件..."
         $executable = $python[0]
         $prefixArguments = @($python | Select-Object -Skip 1)
-        & $executable @prefixArguments -m pip install --upgrade Pillow
-        if ($LASTEXITCODE -ne 0) { throw "最新版 Pillow 安裝失敗。" }
+        & $executable @prefixArguments -m pip install --upgrade -r (Join-Path $packageRoot "requirements.txt")
+        if ($LASTEXITCODE -ne 0) { throw "最新版必要套件安裝失敗。" }
+        $selectedPython = $python
     } catch {
         Write-Warning $_
-        Install-OfflineFallback
+        $selectedPython = Install-OfflineFallback
     }
 
-    $python = Get-Python3Command
+    $python = $selectedPython
+    if (-not $python) { throw "安裝完成，但找不到可用的 Python 執行檔。" }
     $executable = $python[0]
     $prefixArguments = @($python | Select-Object -Skip 1)
     & $executable @prefixArguments -c "import sys, PIL; print('Python ' + sys.version.split()[0]); print('Pillow ' + PIL.__version__)"
@@ -114,6 +120,8 @@ try {
     $installedPython = & $executable @prefixArguments -c "import sys; print(sys.executable)"
     if ($LASTEXITCODE -ne 0 -or -not $installedPython) { throw "無法記錄 Python 執行檔位置。" }
     Set-Content -LiteralPath (Join-Path $packageRoot ".flipbook-python-path") -Value "$installedPython" -Encoding Unicode
+    & $executable @prefixArguments -c "import imageio_ffmpeg; print('imageio-ffmpeg ' + imageio_ffmpeg.__version__)"
+    if ($LASTEXITCODE -ne 0) { throw "imageio-ffmpeg 安裝後驗證失敗。" }
     exit 0
 } catch {
     Write-Host "`n錯誤：$($_.Exception.Message)" -ForegroundColor Red

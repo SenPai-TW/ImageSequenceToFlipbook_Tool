@@ -2,6 +2,29 @@
 
 本工具從 SenPaiToolBox 的第 5 項功能獨立而來，不需要安裝 Blender。
 
+## 單一 EXE 版
+
+已建置的 `FlipbookGenerator.exe` 可直接在 Windows 10／11 64 位元執行，不需要另外安裝 Python、Pillow 或 FFmpeg。EXE 同時包含圖片序列與 MP4／MOV 影片功能。
+
+單檔版會在啟動時將必要元件解壓到 Windows 暫存目錄，因此冷啟動可能比原始碼版本慢。檔案預估約 45–70 MB；未經程式碼簽章的自行建置版本也可能觸發 Windows SmartScreen 提示。
+
+### 建立 EXE
+
+在專案根目錄執行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+```
+
+建置腳本會：
+
+1. 將內附的 Python 3.11.8 安裝到專案專用的 `.build-python311` 目錄，不修改系統 PATH。
+2. 建立隔離的 `.build-venv`，並從 `installers` 安裝 Pillow 與 `imageio-ffmpeg`。
+3. 安裝固定版本的 PyInstaller，將 FFmpeg 與 Pillow 圖片格式支援一併封裝。
+4. 清理舊的 `build`／`dist`，輸出 `dist\FlipbookGenerator.exe`。
+
+PyInstaller 需從官方 PyPI 下載，因此第一次建置需要網路；其餘執行依賴均優先使用專案內附檔案。若內附 Python 無法驗證系統的 TLS 憑證鏈，腳本會限定對 `pypi.org` 與 `files.pythonhosted.org` 使用 pip 的 trusted-host 後備方式。重複建置會沿用專案專用的 Python 與虛擬環境。
+
 ## 安裝
 
 雙擊 `安裝必要套件.bat` 後，安裝程式會先嘗試從 Python 官方網站安裝最新版 64 位元 Python，接著透過 pip 安裝最新版 Pillow 與 `imageio-ffmpeg`。若線上下載或安裝失敗，會自動改用 `installers` 資料夾內附的 Python 3.11.8、Pillow 12.3.0 與 imageio-ffmpeg 0.6.0，圖片序列及 MP4／MOV 影片功能皆可離線安裝使用。

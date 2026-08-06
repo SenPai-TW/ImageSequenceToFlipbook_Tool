@@ -41,14 +41,35 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
         "Include_test=0"
     )
     $process = Start-Process -FilePath $pythonInstaller -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
+    if ($process.ExitCode -ne 0) {
         throw "Python 3.11.8 installation failed with exit code $($process.ExitCode)."
+    }
+}
+
+$buildPython = $runtimePython
+if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+    Write-Host "The installer did not create a project-local runtime; looking for an existing Python 3.11..."
+    $pythonCandidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path $env:ProgramFiles "Python311\python.exe")
+    )
+    foreach ($candidate in $pythonCandidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $version = & $candidate -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$version" -match '^3\.11\.') {
+            $buildPython = $candidate
+            Write-Host "Using existing Python $version at $candidate"
+            break
+        }
+    }
+    if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+        throw "The bundled installer did not create a local runtime and no existing Python 3.11 was found."
     }
 }
 
 if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
     Write-Host "Creating the isolated build environment..."
-    & $runtimePython -m venv $venvRoot
+    & $buildPython -m venv $venvRoot
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment." }
 }
 
@@ -56,8 +77,12 @@ Write-Host "Installing bundled runtime dependencies..."
 & $venvPython -m pip install --disable-pip-version-check --no-index $pillowWheel $ffmpegWheel
 if ($LASTEXITCODE -ne 0) { throw "Failed to install Pillow or imageio-ffmpeg." }
 
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $venvPython -c "import PyInstaller; raise SystemExit(0 if PyInstaller.__version__ == '6.16.0' else 1)" 2>$null
-if ($LASTEXITCODE -ne 0) {
+$pyInstallerCheckExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
+if ($pyInstallerCheckExitCode -ne 0) {
     Write-Host "Installing PyInstaller..."
     & $venvPython -m pip install --disable-pip-version-check "PyInstaller==6.16.0"
     if ($LASTEXITCODE -ne 0) {

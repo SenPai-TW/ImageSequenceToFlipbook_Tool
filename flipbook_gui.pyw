@@ -225,22 +225,22 @@ class FlipbookApp(tk.Tk):
         ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 30))
 
         source_section = self._section(main, "來源與輸出", 2)
-        source_section.columnconfigure(1, weight=1)
-        ttk.Label(source_section, text="來源類型", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        source_section.columnconfigure(1, weight=0)
+        source_section.columnconfigure(2, weight=1)
+        ttk.Label(source_section, text="來源：", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
         source_type = ttk.Combobox(
             source_section, textvariable=self.source_type_var,
             values=SOURCE_TYPES, state="readonly", width=18,
         )
-        source_type.grid(row=0, column=1, sticky="ew", pady=5)
+        source_type.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=5)
         source_type.bind("<<ComboboxSelected>>", self._source_type_changed)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11, style="Browse.TButton").grid(row=0, column=2, padx=(10, 0), pady=5)
+        ttk.Entry(source_section, textvariable=self.source_var).grid(row=0, column=2, sticky="ew", pady=5)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11, style="Browse.TButton").grid(row=0, column=3, padx=(10, 0), pady=5)
 
-        ttk.Label(source_section, text="來源路徑", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
-        ttk.Entry(source_section, textvariable=self.source_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=5)
-        ttk.Label(source_section, text="儲存位置", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
-        ttk.Entry(source_section, textvariable=self.output_var).grid(row=2, column=1, sticky="ew", pady=5)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11, style="Browse.TButton").grid(row=2, column=2, padx=(10, 0), pady=5)
-        ttk.Label(source_section, textvariable=self.count_var, style="Hint.Panel.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(9, 0))
+        ttk.Label(source_section, text="儲存位置：", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Entry(source_section, textvariable=self.output_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11, style="Browse.TButton").grid(row=1, column=3, padx=(10, 0), pady=5)
+        ttk.Label(source_section, textvariable=self.count_var, style="Hint.Panel.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(9, 0))
 
         self.video_options = self._section(main, "時間範圍與畫面適配", 3)
         for column in (1, 3, 5):

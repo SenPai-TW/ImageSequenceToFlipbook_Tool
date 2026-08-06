@@ -1,0 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local runtime state
+.flipbook-python-path
+
+# PyInstaller build output and isolated build runtimes
+.build-python311/
+.build-venv/
+build/
+dist/
+*.spec.bak
+

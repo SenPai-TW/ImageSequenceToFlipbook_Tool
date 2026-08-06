@@ -51,6 +51,7 @@ VBS 啟動器會在背景使用已安裝的 Python 3 開啟 GUI，不會出現 P
 - 若影片影格少於網格容量，剩餘位置預設保留空格；可勾選用最後一格補齊。
 - `置中裁切`：保持比例填滿正方形，超出部分從中央裁掉。
 - `拉伸成正方形`：保留完整畫面範圍，但非正方形影片會變形。
+- `延伸畫布成正方形`：保持完整畫面與原始比例並置中，不裁切也不變形；RGBA 模式使用透明延伸區域，其他不透明通道模式使用純黑底。
 
 ## 命令列使用方式（選用）
 
@@ -63,6 +64,8 @@ python flipbook_pillow.py "D:\Frames" "D:\Output\flipbook.png" --cols 12 --rows 
 ```powershell
 python flipbook_pillow.py "D:\Video\effect.mp4" "D:\Output\flipbook.png" --cols 8 --rows 8 --tile-size 256 --start 1.5 --end 5 --video-fit crop
 ```
+
+若要保留完整影片畫面並將畫布延伸成正方形，可將 `--video-fit` 設為 `pad`。
 
 圖片依檔名自然排序，例如 `frame2.png` 會排在 `frame10.png` 前面；排列方向為由左到右、再由上到下。格數不足時仍會生成，超出容量的尾端圖片會被忽略。
 
@@ -90,4 +93,3 @@ make_flipbook(
     channel_mode="RGBA",
 )
 ```
-

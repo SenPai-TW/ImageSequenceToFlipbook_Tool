@@ -40,6 +40,7 @@ SOURCE_TYPES = ("圖片序列", "影片（MP4／MOV）")
 VIDEO_FIT_LABELS = {
     "置中裁切": "crop",
     "拉伸成正方形": "stretch",
+    "延伸畫布成正方形": "pad",
 }
 
 

@@ -15,7 +15,7 @@ from PIL import Image, UnidentifiedImageError
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"}
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 CHANNEL_MODES = ("RGBA", "RGB", "RGB_BLACK")
-VIDEO_FIT_MODES = ("crop", "stretch")
+VIDEO_FIT_MODES = ("crop", "stretch", "pad")
 
 
 def _load_imageio_ffmpeg():
@@ -99,10 +99,31 @@ def apply_channel_mode(image: Image.Image, mode: str) -> Image.Image:
     raise ValueError(f"Unknown channel mode: {mode}")
 
 
-def fit_video_frame(image: Image.Image, target_size: int, fit_mode: str) -> Image.Image:
+def fit_video_frame(
+    image: Image.Image,
+    target_size: int,
+    fit_mode: str,
+    channel_mode: str = "RGBA",
+) -> Image.Image:
     fit_mode = fit_mode.lower()
     if fit_mode == "stretch":
         return image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    if fit_mode == "pad":
+        width, height = image.size
+        scale = min(target_size / width, target_size / height)
+        resized = image.convert("RGBA").resize(
+            (
+                min(target_size, max(1, round(width * scale))),
+                min(target_size, max(1, round(height * scale))),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+        background = (0, 0, 0, 0) if channel_mode.upper() == "RGBA" else (0, 0, 0, 255)
+        canvas = Image.new("RGBA", (target_size, target_size), background)
+        left = (target_size - resized.width) // 2
+        top = (target_size - resized.height) // 2
+        canvas.alpha_composite(resized, (left, top))
+        return canvas
     if fit_mode != "crop":
         raise ValueError(f"video_fit must be one of: {', '.join(VIDEO_FIT_MODES)}")
     width, height = image.size
@@ -202,7 +223,7 @@ def make_video_flipbook(
             if source_index not in selected_lookup:
                 continue
             tile = Image.frombytes("RGB", frame_size, frame_bytes).convert("RGBA")
-            tile = fit_video_frame(tile, target_size, video_fit)
+            tile = fit_video_frame(tile, target_size, video_fit, channel_mode)
             tile = apply_channel_mode(tile, channel_mode)
             x = (written % cols) * target_size
             y = (written // cols) * target_size
@@ -319,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", type=float, default=None,
                         help="Video end time in seconds (default: video end)")
     parser.add_argument("--video-fit", choices=VIDEO_FIT_MODES, default="crop",
-                        help="Video frame fitting: crop or stretch (default: crop)")
+                        help="Video frame fitting: crop, stretch, or pad (default: crop)")
     return parser
 
 

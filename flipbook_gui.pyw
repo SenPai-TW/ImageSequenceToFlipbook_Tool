@@ -80,6 +80,62 @@ FIT_DESCRIPTIONS = {
         "保持完整畫面與原始比例並置中；空白區域在 RGBA 模式為透明，其他模式為黑色。"
     ),
 }
+THEME_DARK = "dark"
+THEME_LIGHT = "light"
+THEME_PALETTES = {
+    THEME_DARK: {
+        "window_bg": "#1F2328",
+        "section_bg": "#1F2328",
+        "input_bg": "#171B20",
+        "input_hover": "#20262C",
+        "input_focus": "#252C33",
+        "secondary_button": "#363E45",
+        "secondary_button_hover": "#4A545E",
+        "secondary_button_pressed": "#2D343A",
+        "primary_button": "#5F96C7",
+        "primary_button_hover": "#72ACD9",
+        "primary_button_pressed": "#4F83B1",
+        "disabled_bg": "#30363B",
+        "progress_track": "#171B20",
+        "progress_fill": "#5F96C7",
+        "heading_text": "#F2F5F7",
+        "normal_text": "#E4E9ED",
+        "input_text": "#E4E9ED",
+        "secondary_text": "#98A2AA",
+        "helper_text": "#9AA3AA",
+        "disabled_text": "#747D85",
+        "error_text": "#E0B783",
+        "button_text": "#F5FBFF",
+        "warning_bg": "#C07D38",
+        "arrow": "#B8C1C8",
+    },
+    THEME_LIGHT: {
+        "window_bg": "#F1F0ED",
+        "section_bg": "#F1F0ED",
+        "input_bg": "#E5E3DF",
+        "input_hover": "#DEDBD6",
+        "input_focus": "#D9D6D1",
+        "secondary_button": "#DEDCD7",
+        "secondary_button_hover": "#D4D1CB",
+        "secondary_button_pressed": "#CAC7C1",
+        "primary_button": "#687F94",
+        "primary_button_hover": "#748CA2",
+        "primary_button_pressed": "#586F84",
+        "disabled_bg": "#DFDDD9",
+        "progress_track": "#D9D7D2",
+        "progress_fill": "#74899C",
+        "heading_text": "#34383B",
+        "normal_text": "#484C4F",
+        "input_text": "#3F4346",
+        "secondary_text": "#777A7C",
+        "helper_text": "#878A8C",
+        "disabled_text": "#A3A29F",
+        "error_text": "#B76561",
+        "button_text": "#F7F7F5",
+        "warning_bg": "#B76561",
+        "arrow": "#555A5D",
+    },
+}
 
 
 def classify_source_path(path: str | Path) -> str | None:
@@ -353,8 +409,8 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.title("圖片序列／影片轉 Flipbook")
         self.geometry("960x760")
         self.minsize(900, 640)
-        self.configure(bg="#1f2328")
 
+        self.theme_var = tk.StringVar(value=THEME_DARK)
         self.source_var = tk.StringVar()
         self.source_type_var = tk.StringVar(value=SOURCE_TYPE_LABELS[SOURCE_IMAGE_FILE])
         self.output_var = tk.StringVar()
@@ -380,6 +436,9 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.detail_text_id: int | None = None
         self.fit_detail_canvas: tk.Canvas | None = None
         self.fit_detail_text_id: int | None = None
+        self.theme_toggle_canvas: tk.Canvas | None = None
+        self._theme_after_id: str | None = None
+        self._theme_knob_x = 9.0
         self.output_folder_button: ttk.Button | None = None
         self._last_output_path: Path | None = None
         self._busy = False
@@ -430,113 +489,325 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.fit_var.trace_add("write", self._fit_changed)
 
     def _configure_style(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        bg, panel, field = "#1f2328", "#1f2328", "#171b20"
-        text, muted, border, accent = "#e4e9ed", "#98a2aa", "#46515a", "#5f96c7"
-        family = "Microsoft JhengHei UI"
-        title = (family, 22, "bold")
-        base = (family, 10)
-        section_title = (family, 16, "bold")
+        self._style = ttk.Style(self)
+        self._style.theme_use("clam")
+        self._font_family = "Microsoft JhengHei UI"
 
         # Large stretched images made live window resizing expensive. Sections
         # now use a lightweight borderless layout; rounded images are limited to
         # the small input controls where their redraw cost is negligible.
-        style.layout("Section.TLabelframe", [
+        self._style.layout("Section.TLabelframe", [
             ("Labelframe.padding", {"sticky": "nsew"}),
         ])
 
         # Extra transparent space on the right keeps the arrow away from the edge.
-        arrow_image = tk.PhotoImage(master=self, width=23, height=11)
-        arrow_color = "#b8c1c8"
-        for y, half_width in enumerate((5, 4, 3, 2, 1)):
-            left = 8 - half_width
-            right = 9 + half_width
-            arrow_image.put(arrow_color, to=(left, y + 3, right, y + 4))
-
-        self._combo_arrow_image = arrow_image
-        style.element_create("FlatCombo.arrow", "image", arrow_image, sticky="e")
-
-        style.configure("TFrame", background=bg)
-        style.configure("Panel.TFrame", background=panel)
-        style.configure("PanelFlat.TFrame", background=panel)
-        style.configure("TLabel", background=bg, foreground=text, font=base)
-        style.configure("Title.TLabel", background=bg, foreground="#f2f5f7", font=title)
-        style.configure("Muted.TLabel", background=bg, foreground=muted, font=base)
-        style.configure("Panel.TLabel", background=panel, foreground=text, font=base)
-        style.configure("Hint.Panel.TLabel", background=panel, foreground=muted, font=(family, 9))
-        style.configure("Section.TLabelframe", background=bg, foreground=text, borderwidth=0)
-        style.configure("Section.TLabelframe.Label", background=bg, foreground="#f1f5f8", font=section_title)
-        style.configure("InfoTitle.Panel.TLabel", background=panel, foreground="#cfe8f7", font=(family, 10, "bold"))
-        style.configure("WarningIcon.TLabel", background="#c07d38", foreground="#fff5ea", padding=(6, 1), font=(family, 9, "bold"))
-        style.configure("WarningText.TLabel", background=panel, foreground="#e0b783", font=(family, 9))
-        style.configure("TButton", background="#363e45", foreground=text, bordercolor=border,
-                        lightcolor=border, darkcolor=border, padding=(12, 7), font=base)
-        style.map("TButton", background=[("active", "#4a545e"), ("disabled", "#30363b")],
-                  foreground=[("disabled", "#747d85")])
-        style.configure("Browse.TButton", background="#363e45", foreground=text,
-                        bordercolor="#363e45", lightcolor="#363e45", darkcolor="#363e45",
-                        relief="flat", borderwidth=0, padding=(12, 7), font=base)
-        style.map("Browse.TButton", background=[("active", "#4a545e"), ("disabled", "#30363b")],
-                  foreground=[("disabled", "#747d85")])
-        style.configure("Primary.TButton", background=accent, foreground="#f5fbff",
-                        bordercolor=accent, lightcolor=accent, darkcolor=accent,
-                        relief="flat", borderwidth=0, padding=(14, 12),
-                        font=("Microsoft JhengHei UI", 11, "bold"))
-        style.map("Primary.TButton", background=[("active", "#72acd9"), ("disabled", "#405565")])
-        style.configure("SecondaryAction.TButton", background="#363e45", foreground=text,
-                        bordercolor="#363e45", lightcolor="#363e45", darkcolor="#363e45",
-                        relief="flat", borderwidth=0, padding=(12, 13), font=(family, 10))
-        style.map("SecondaryAction.TButton",
-                  background=[("active", "#4a545e"), ("disabled", "#30363b")],
-                  foreground=[("disabled", "#747d85")])
-        style.configure("TEntry", fieldbackground=field, foreground=text, insertcolor=text,
-                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
-                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
-        style.map("TEntry",
-                  fieldbackground=[("disabled", field), ("focus", field), ("!focus", field)],
-                  background=[("disabled", field), ("focus", field), ("!focus", field)],
-                  foreground=[("disabled", muted), ("!disabled", text)])
-        style.layout("TEntry", [
+        self._combo_arrow_image = tk.PhotoImage(master=self, width=23, height=11)
+        self._style.element_create(
+            "FlatCombo.arrow", "image", self._combo_arrow_image, sticky="e"
+        )
+        self._style.layout("TEntry", [
             ("Entry.padding", {"sticky": "nsew", "children": [
                 ("Entry.textarea", {"sticky": "nsew"}),
             ]}),
         ])
-        style.configure("TSpinbox", fieldbackground=field, foreground=text, insertcolor=text,
-                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
-                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
-        style.map("TSpinbox",
-                  fieldbackground=[("disabled", field), ("focus", field), ("!focus", field)],
-                  background=[("disabled", field), ("focus", field), ("!focus", field)],
-                  foreground=[("disabled", muted), ("!disabled", text)])
-        style.layout("TSpinbox", [
+        self._style.layout("TSpinbox", [
             ("Spinbox.padding", {"sticky": "nsew", "children": [
                 ("Spinbox.textarea", {"sticky": "nsew"}),
             ]}),
         ])
-        style.configure("TCombobox", fieldbackground=field, foreground=text,
-                        background=field, bordercolor=field, lightcolor=field, darkcolor=field,
-                        relief="flat", borderwidth=0, padding=(10, 7), font=base)
-        style.layout("TCombobox", [
+        self._style.layout("TCombobox", [
             ("FlatCombo.arrow", {"side": "right", "sticky": "e"}),
             ("Combobox.padding", {"sticky": "nsew", "children": [
                 ("Combobox.textarea", {"sticky": "nsew"}),
             ]}),
         ])
-        style.map("TCombobox",
-                  fieldbackground=[("disabled", field), ("readonly", field), ("focus", field), ("!focus", field)],
-                  background=[("disabled", field), ("readonly", field), ("focus", field), ("!focus", field)],
-                  foreground=[("disabled", muted), ("readonly", text), ("!disabled", text)])
+        self._apply_theme_styles(THEME_PALETTES[self.theme_var.get()])
+
+    def _apply_theme_styles(self, palette: dict[str, str]) -> None:
+        self._palette = palette
+        style = self._style
+        family = self._font_family
+        base = (family, 10)
+        field = palette["input_bg"]
+        text = palette["normal_text"]
+        input_text = palette["input_text"]
+        panel = palette["section_bg"]
+        bg = palette["window_bg"]
+
+        self.configure(bg=bg)
+        self._combo_arrow_image.blank()
+        for y, half_width in enumerate((5, 4, 3, 2, 1)):
+            left = 8 - half_width
+            right = 9 + half_width
+            self._combo_arrow_image.put(
+                palette["arrow"], to=(left, y + 3, right, y + 4)
+            )
+
+        style.configure("TFrame", background=bg)
+        style.configure("Panel.TFrame", background=panel)
+        style.configure("PanelFlat.TFrame", background=panel)
+        style.configure("TLabel", background=bg, foreground=text, font=base)
+        style.configure(
+            "Title.TLabel", background=bg, foreground=palette["heading_text"],
+            font=(family, 22, "bold"),
+        )
+        style.configure(
+            "Muted.TLabel", background=bg, foreground=palette["secondary_text"],
+            font=base,
+        )
+        style.configure("Panel.TLabel", background=panel, foreground=text, font=base)
+        style.configure(
+            "Hint.Panel.TLabel", background=panel,
+            foreground=palette["helper_text"], font=(family, 9),
+        )
+        style.configure(
+            "Section.TLabelframe", background=bg, foreground=text, borderwidth=0
+        )
+        style.configure(
+            "Section.TLabelframe.Label", background=bg,
+            foreground=palette["heading_text"], font=(family, 16, "bold"),
+        )
+        style.configure(
+            "InfoTitle.Panel.TLabel", background=panel,
+            foreground=palette["heading_text"], font=(family, 10, "bold"),
+        )
+        style.configure(
+            "WarningIcon.TLabel", background=palette["warning_bg"],
+            foreground=palette["button_text"], padding=(6, 1),
+            font=(family, 9, "bold"),
+        )
+        style.configure(
+            "WarningText.TLabel", background=panel,
+            foreground=palette["error_text"], font=(family, 9),
+        )
+
+        for button_style, vertical_padding in (
+            ("TButton", 7), ("Browse.TButton", 7),
+            ("SecondaryAction.TButton", 13),
+        ):
+            style.configure(
+                button_style,
+                background=palette["secondary_button"], foreground=text,
+                bordercolor=palette["secondary_button"],
+                lightcolor=palette["secondary_button"],
+                darkcolor=palette["secondary_button"], relief="flat",
+                borderwidth=0, padding=(12, vertical_padding), font=base,
+            )
+            style.map(
+                button_style,
+                background=[
+                    ("disabled", palette["disabled_bg"]),
+                    ("pressed", palette["secondary_button_pressed"]),
+                    ("active", palette["secondary_button_hover"]),
+                ],
+                foreground=[("disabled", palette["disabled_text"])],
+            )
+        style.configure(
+            "Primary.TButton", background=palette["primary_button"],
+            foreground=palette["button_text"],
+            bordercolor=palette["primary_button"],
+            lightcolor=palette["primary_button"],
+            darkcolor=palette["primary_button"], relief="flat", borderwidth=0,
+            padding=(14, 12), font=(family, 11, "bold"),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[
+                ("disabled", palette["disabled_bg"]),
+                ("pressed", palette["primary_button_pressed"]),
+                ("active", palette["primary_button_hover"]),
+            ],
+            foreground=[("disabled", palette["disabled_text"])],
+        )
+
+        for field_style in ("TEntry", "TSpinbox", "TCombobox"):
+            style.configure(
+                field_style, fieldbackground=field, foreground=input_text,
+                insertcolor=input_text, background=field, bordercolor=field,
+                lightcolor=field, darkcolor=field, relief="flat", borderwidth=0,
+                padding=(10, 7), font=base,
+            )
+            style.map(
+                field_style,
+                fieldbackground=[
+                    ("disabled", palette["disabled_bg"]),
+                    ("focus", palette["input_focus"]),
+                    ("active", palette["input_hover"]),
+                    ("!focus", field),
+                ],
+                background=[
+                    ("disabled", palette["disabled_bg"]),
+                    ("focus", palette["input_focus"]),
+                    ("active", palette["input_hover"]),
+                    ("!focus", field),
+                ],
+                foreground=[
+                    ("disabled", palette["disabled_text"]),
+                    ("!disabled", input_text),
+                ],
+            )
+
         self.option_add("*TCombobox*Listbox.background", field)
-        self.option_add("*TCombobox*Listbox.foreground", text)
-        self.option_add("*TCombobox*Listbox.selectBackground", accent)
-        self.option_add("*TCombobox*Listbox.selectForeground", "#f5fbff")
+        self.option_add("*TCombobox*Listbox.foreground", input_text)
+        self.option_add(
+            "*TCombobox*Listbox.selectBackground", palette["primary_button"]
+        )
+        self.option_add(
+            "*TCombobox*Listbox.selectForeground", palette["button_text"]
+        )
         self.option_add("*TCombobox*Listbox.font", base)
-        style.configure("Horizontal.TProgressbar", background=accent, troughcolor=field,
-                        bordercolor=field, lightcolor=accent, darkcolor=accent,
-                        relief="flat", borderwidth=0, thickness=13)
-        style.configure("TCheckbutton", background=panel, foreground=text, font=(family, 9))
-        style.map("TCheckbutton", background=[("active", panel)], foreground=[("disabled", "#777f85")])
+        style.configure(
+            "Horizontal.TProgressbar", background=palette["progress_fill"],
+            troughcolor=palette["progress_track"],
+            bordercolor=palette["progress_track"],
+            lightcolor=palette["progress_fill"],
+            darkcolor=palette["progress_fill"], relief="flat",
+            borderwidth=0, thickness=13,
+        )
+        style.configure(
+            "TCheckbutton", background=panel, foreground=text, font=(family, 9),
+            indicatorbackground=field, indicatorforeground=palette["primary_button"],
+            bordercolor=field, lightcolor=field, darkcolor=field,
+        )
+        style.map(
+            "TCheckbutton", background=[("active", panel)],
+            foreground=[("disabled", palette["disabled_text"])],
+            indicatorbackground=[
+                ("disabled", palette["disabled_bg"]),
+                ("active", palette["input_hover"]),
+            ],
+        )
+
+        for canvas, title_id, text_id in (
+            (
+                self.detail_canvas,
+                getattr(self, "detail_title_id", None),
+                self.detail_text_id,
+            ),
+            (
+                self.fit_detail_canvas,
+                getattr(self, "fit_detail_title_id", None),
+                self.fit_detail_text_id,
+            ),
+        ):
+            if canvas is not None:
+                canvas.configure(bg=panel)
+                if title_id is not None:
+                    canvas.itemconfigure(title_id, fill=palette["heading_text"])
+                if text_id is not None:
+                    canvas.itemconfigure(text_id, fill=palette["helper_text"])
+        self._refresh_combobox_popdown_colors()
+        self._update_theme_toggle_colors()
+
+    def _refresh_combobox_popdown_colors(self) -> None:
+        if not hasattr(self, "source_type_combo"):
+            return
+        palette = self._palette
+        for combo in (self.source_type_combo, self.mode_combo, self.fit_combo):
+            try:
+                popdown = self.tk.call(
+                    "ttk::combobox::PopdownWindow", str(combo)
+                )
+                listbox = f"{popdown}.f.l"
+                self.tk.call(
+                    listbox, "configure",
+                    "-background", palette["input_bg"],
+                    "-foreground", palette["input_text"],
+                    "-selectbackground", palette["primary_button"],
+                    "-selectforeground", palette["button_text"],
+                )
+            except tk.TclError:
+                pass
+
+    def _build_theme_toggle(self, parent: ttk.Frame) -> None:
+        palette = self._palette
+        self.theme_toggle_canvas = tk.Canvas(
+            parent, width=34, height=20, bg=palette["window_bg"],
+            highlightthickness=0, bd=0, cursor="hand2",
+        )
+        self.theme_toggle_canvas.grid(
+            row=0, column=0, rowspan=2, sticky="ne", pady=(1, 0)
+        )
+        track = palette["primary_button"]
+        self._theme_track_ids = (
+            self.theme_toggle_canvas.create_oval(
+                2, 3, 16, 17, fill=track, outline=track
+            ),
+            self.theme_toggle_canvas.create_rectangle(
+                9, 3, 25, 17, fill=track, outline=track
+            ),
+            self.theme_toggle_canvas.create_oval(
+                18, 3, 32, 17, fill=track, outline=track
+            ),
+        )
+        self._theme_knob_id = self.theme_toggle_canvas.create_oval(
+            4, 5, 14, 15, fill=palette["button_text"],
+            outline=palette["button_text"],
+        )
+        self.theme_toggle_canvas.bind("<Button-1>", self._toggle_theme)
+        self.theme_toggle_canvas.bind("<Return>", self._toggle_theme)
+
+    def _update_theme_toggle_colors(self) -> None:
+        if self.theme_toggle_canvas is None:
+            return
+        palette = self._palette
+        self.theme_toggle_canvas.configure(bg=palette["window_bg"])
+        for item_id in self._theme_track_ids:
+            self.theme_toggle_canvas.itemconfigure(
+                item_id, fill=palette["primary_button"],
+                outline=palette["primary_button"],
+            )
+        self.theme_toggle_canvas.itemconfigure(
+            self._theme_knob_id, fill=palette["button_text"],
+            outline=palette["button_text"],
+        )
+
+    def _set_theme_knob_position(self, center_x: float) -> None:
+        self._theme_knob_x = center_x
+        if self.theme_toggle_canvas is not None:
+            self.theme_toggle_canvas.coords(
+                self._theme_knob_id,
+                center_x - 5, 5, center_x + 5, 15,
+            )
+
+    def _set_theme(self, theme: str, animate: bool = True) -> None:
+        if theme not in THEME_PALETTES:
+            raise ValueError(f"Unknown theme: {theme}")
+        if self._theme_after_id is not None:
+            self.after_cancel(self._theme_after_id)
+            self._theme_after_id = None
+        self.theme_var.set(theme)
+        self._apply_theme_styles(THEME_PALETTES[theme])
+        target_x = 25.0 if theme == THEME_LIGHT else 9.0
+        if not animate or self.theme_toggle_canvas is None:
+            self._set_theme_knob_position(target_x)
+            return
+
+        start_x = self._theme_knob_x
+        started = time.perf_counter()
+        duration_ms = 140
+
+        def step() -> None:
+            if self._closing or self.theme_toggle_canvas is None:
+                self._theme_after_id = None
+                return
+            elapsed = (time.perf_counter() - started) * 1000
+            progress = min(1.0, elapsed / duration_ms)
+            eased = 1 - (1 - progress) ** 3
+            self._set_theme_knob_position(
+                start_x + (target_x - start_x) * eased
+            )
+            if progress < 1:
+                self._theme_after_id = self.after(16, step)
+            else:
+                self._theme_after_id = None
+
+        step()
+
+    def _toggle_theme(self, _event: object | None = None) -> str:
+        target = THEME_LIGHT if self.theme_var.get() == THEME_DARK else THEME_DARK
+        self._set_theme(target, animate=True)
+        return "break"
     def _section(self, parent: ttk.Frame, title: str, row: int) -> ttk.Labelframe:
         section = ttk.Labelframe(parent, text=title, style="Section.TLabelframe", padding=(0, 14, 0, 14))
         section.grid(row=row, column=0, sticky="ew", pady=(0, 16))
@@ -573,17 +844,22 @@ class FlipbookApp(tk.Tk, DndRootMixin):
 
         ttk.Label(main, text="Flipbook Texture Sheet Generator", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 30))
+        self._build_theme_toggle(main)
 
         source_section = self._section(main, "來源與輸出", 2)
         source_section.columnconfigure(1, weight=0)
         source_section.columnconfigure(2, weight=1)
         ttk.Label(source_section, text="來源：", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
-        source_type = ttk.Combobox(
+        self.source_type_combo = ttk.Combobox(
             source_section, textvariable=self.source_type_var,
             values=SOURCE_TYPES, state="readonly", width=24,
         )
-        source_type.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=5)
-        source_type.bind("<<ComboboxSelected>>", self._source_type_changed)
+        self.source_type_combo.grid(
+            row=0, column=1, sticky="ew", padx=(0, 10), pady=5
+        )
+        self.source_type_combo.bind(
+            "<<ComboboxSelected>>", self._source_type_changed
+        )
         ttk.Entry(source_section, textvariable=self.source_var).grid(row=0, column=2, sticky="ew", pady=5)
         ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11, style="Browse.TButton").grid(row=0, column=3, padx=(10, 0), pady=5)
 
@@ -635,31 +911,35 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.fill_check.grid_remove()
 
         self.detail_canvas = tk.Canvas(
-            settings, width=420, height=90, bg="#1f2328",
+            settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
         self.detail_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
         self.detail_title_id = self.detail_canvas.create_text(
-            0, 14, text="ⓘ  通道模式說明", anchor="nw", fill="#d8edf9",
+            0, 14, text="ⓘ  通道模式說明", anchor="nw",
+            fill=self._palette["heading_text"],
             font=("Microsoft JhengHei UI", 10, "bold"),
         )
         self.detail_text_id = self.detail_canvas.create_text(
-            0, 40, text=self.detail_var.get(), anchor="nw", fill="#9aa3aa",
+            0, 40, text=self.detail_var.get(), anchor="nw",
+            fill=self._palette["helper_text"],
             font=("Microsoft JhengHei UI", 9), width=416,
         )
         self.fit_detail_canvas = tk.Canvas(
-            settings, width=420, height=90, bg="#1f2328",
+            settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
         self.fit_detail_canvas.grid(
             row=5, column=2, columnspan=2, sticky="ew", pady=(8, 0)
         )
         self.fit_detail_title_id = self.fit_detail_canvas.create_text(
-            0, 14, text="ⓘ  畫面適配說明", anchor="nw", fill="#d8edf9",
+            0, 14, text="ⓘ  畫面適配說明", anchor="nw",
+            fill=self._palette["heading_text"],
             font=("Microsoft JhengHei UI", 10, "bold"),
         )
         self.fit_detail_text_id = self.fit_detail_canvas.create_text(
-            0, 40, text=self.fit_detail_var.get(), anchor="nw", fill="#9aa3aa",
+            0, 40, text=self.fit_detail_var.get(), anchor="nw",
+            fill=self._palette["helper_text"],
             font=("Microsoft JhengHei UI", 9), width=416,
         )
         self.detail_canvas.bind(
@@ -1035,6 +1315,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
     def _close(self) -> None:
         self._closing = True
         for callback_id in (
+            self._theme_after_id,
             self._overlay_after_id, self._overlay_prime_after_id,
             self._overlay_sync_after_id, self._leave_after_id,
             self._shake_after_id, self._shake_queue_id,

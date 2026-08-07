@@ -261,6 +261,53 @@ class NativeSourceDialogTests(unittest.TestCase):
         self.assertEqual(self.app.rows_var.get(), 8)
         self.assertIn("8 × 8 = 64", self.app.capacity_var.get())
 
+    def test_theme_toggle_is_in_the_top_right_and_defaults_to_dark(self) -> None:
+        grid = self.app.theme_toggle_canvas.grid_info()
+
+        self.assertEqual(self.app.theme_var.get(), GUI.THEME_DARK)
+        self.assertEqual((int(grid["row"]), int(grid["column"])), (0, 0))
+        self.assertIn("e", str(grid["sticky"]))
+        self.assertEqual(int(self.app.theme_toggle_canvas.cget("width")), 34)
+        self.assertEqual(int(self.app.theme_toggle_canvas.cget("height")), 20)
+        self.assertEqual(self.app._theme_knob_x, 9.0)
+
+    def test_light_theme_applies_palette_to_widgets_and_can_switch_back(self) -> None:
+        light = GUI.THEME_PALETTES[GUI.THEME_LIGHT]
+        dark = GUI.THEME_PALETTES[GUI.THEME_DARK]
+
+        self.app._set_theme(GUI.THEME_LIGHT, animate=False)
+
+        self.assertEqual(self.app.theme_var.get(), GUI.THEME_LIGHT)
+        self.assertEqual(self.app.cget("background").upper(), light["window_bg"])
+        self.assertEqual(
+            self.app._style.lookup("TEntry", "fieldbackground").upper(),
+            light["input_bg"],
+        )
+        self.assertEqual(
+            self.app._style.lookup("Primary.TButton", "background").upper(),
+            light["primary_button"],
+        )
+        self.assertEqual(
+            self.app.detail_canvas.cget("background").upper(),
+            light["section_bg"],
+        )
+        self.assertEqual(
+            self.app.detail_canvas.itemcget(self.app.detail_text_id, "fill").upper(),
+            light["helper_text"],
+        )
+        popdown = self.app.tk.call(
+            "ttk::combobox::PopdownWindow", str(self.app.mode_combo)
+        )
+        self.assertEqual(
+            self.app.tk.call(f"{popdown}.f.l", "cget", "-background").upper(),
+            light["input_bg"],
+        )
+        self.assertEqual(self.app._theme_knob_x, 25.0)
+
+        self.app._set_theme(GUI.THEME_DARK, animate=False)
+        self.assertEqual(self.app.cget("background").upper(), dark["window_bg"])
+        self.assertEqual(self.app._theme_knob_x, 9.0)
+
     def test_progress_bar_is_determinate_and_resets_after_completion(self) -> None:
         self.assertEqual(str(self.app.progress.cget("mode")), "determinate")
         self.assertEqual(float(self.app.progress.cget("maximum")), 100.0)

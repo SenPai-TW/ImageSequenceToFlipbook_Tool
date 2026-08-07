@@ -58,7 +58,10 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
     )
     $process = Start-Process -FilePath $pythonInstaller -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) {
-        throw "Python 3.11.8 installation failed with exit code $($process.ExitCode)."
+        Write-Warning (
+            "Project-local Python installation failed with exit code " +
+            "$($process.ExitCode); continuing with Python 3.11 discovery/repair."
+        )
     }
 }
 

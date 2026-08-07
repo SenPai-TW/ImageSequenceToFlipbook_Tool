@@ -9,6 +9,7 @@ $venvPython = Join-Path $venvRoot "Scripts\python.exe"
 $pythonInstaller = Join-Path $projectRoot "installers\python-3.11.8-amd64.exe"
 $pillowWheel = Join-Path $projectRoot "installers\pillow-12.3.0-cp311-cp311-win_amd64.whl"
 $ffmpegWheel = Join-Path $projectRoot "installers\imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl"
+$tkinterDndWheel = Join-Path $projectRoot "installers\tkinterdnd2-0.6.2-py3-none-any.whl"
 $specFile = Join-Path $projectRoot "FlipbookGenerator.spec"
 $buildRoot = Join-Path $projectRoot "build"
 $distRoot = Join-Path $projectRoot "dist"
@@ -22,7 +23,22 @@ function Assert-ProjectChild([string]$Path) {
     }
 }
 
-foreach ($requiredFile in @($pythonInstaller, $pillowWheel, $ffmpegWheel, $specFile)) {
+function Find-Python311 {
+    $pythonCandidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"),
+        (Join-Path $env:ProgramFiles "Python311\python.exe")
+    )
+    foreach ($candidate in $pythonCandidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $version = & $candidate -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$version" -match '^3\.11\.') {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+foreach ($requiredFile in @($pythonInstaller, $pillowWheel, $ffmpegWheel, $tkinterDndWheel, $specFile)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required build file is missing: $requiredFile"
     }
@@ -41,23 +57,51 @@ if (-not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
         "Include_test=0"
     )
     $process = Start-Process -FilePath $pythonInstaller -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
-        throw "Python 3.11.8 installation failed with exit code $($process.ExitCode)."
+    if ($process.ExitCode -ne 0) {
+        Write-Warning (
+            "Project-local Python installation failed with exit code " +
+            "$($process.ExitCode); continuing with Python 3.11 discovery/repair."
+        )
     }
+}
+
+$buildPython = $runtimePython
+if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+    Write-Host "The installer did not create a project-local runtime; looking for an existing Python 3.11..."
+    $existingPython = Find-Python311
+    if ($existingPython) { $buildPython = $existingPython }
+
+    # A stale Python installer registration can make a custom-target install
+    # report success without restoring any files. Repair that registered copy
+    # once, then use it only to create the isolated project build environment.
+    if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+        Write-Host "No Python 3.11 executable was found; repairing the registered Python 3.11.8 installation..."
+        $repair = Start-Process -FilePath $pythonInstaller -ArgumentList "/repair /quiet" -Wait -PassThru
+        if ($repair.ExitCode -eq 0) { $existingPython = Find-Python311 }
+        if ($existingPython) { $buildPython = $existingPython }
+    }
+    if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+        throw "The bundled installer did not create a local runtime and Python 3.11 repair failed."
+    }
+    Write-Host "Using Python 3.11 at $buildPython"
 }
 
 if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
     Write-Host "Creating the isolated build environment..."
-    & $runtimePython -m venv $venvRoot
+    & $buildPython -m venv $venvRoot
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the Python virtual environment." }
 }
 
 Write-Host "Installing bundled runtime dependencies..."
-& $venvPython -m pip install --disable-pip-version-check --no-index $pillowWheel $ffmpegWheel
-if ($LASTEXITCODE -ne 0) { throw "Failed to install Pillow or imageio-ffmpeg." }
+& $venvPython -m pip install --disable-pip-version-check --no-index $pillowWheel $ffmpegWheel $tkinterDndWheel
+if ($LASTEXITCODE -ne 0) { throw "Failed to install Pillow, imageio-ffmpeg, or tkinterdnd2." }
 
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $venvPython -c "import PyInstaller; raise SystemExit(0 if PyInstaller.__version__ == '6.16.0' else 1)" 2>$null
-if ($LASTEXITCODE -ne 0) {
+$pyInstallerCheckExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
+if ($pyInstallerCheckExitCode -ne 0) {
     Write-Host "Installing PyInstaller..."
     & $venvPython -m pip install --disable-pip-version-check "PyInstaller==6.16.0"
     if ($LASTEXITCODE -ne 0) {
@@ -95,4 +139,3 @@ $exe = Get-Item -LiteralPath $expectedExe
 Write-Host ""
 Write-Host "Build complete: $($exe.FullName)"
 Write-Host ("File size: {0:N1} MB" -f ($exe.Length / 1MB))
-

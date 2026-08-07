@@ -7,7 +7,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from PIL import Image, UnidentifiedImageError
 
@@ -15,7 +15,24 @@ from PIL import Image, UnidentifiedImageError
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"}
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 CHANNEL_MODES = ("RGBA", "RGB", "RGB_BLACK")
-VIDEO_FIT_MODES = ("crop", "stretch")
+FRAME_FIT_MODES = ("crop", "stretch", "pad")
+# Backward-compatible public name used by the existing video CLI/API.
+VIDEO_FIT_MODES = FRAME_FIT_MODES
+ProgressCallback = Callable[[int], None]
+
+
+class _ProgressReporter:
+    """Emit bounded integer percentages without flooding the GUI thread."""
+
+    def __init__(self, callback: ProgressCallback | None) -> None:
+        self.callback = callback
+        self.last_value = -1
+
+    def update(self, value: float) -> None:
+        percent = max(0, min(100, round(value)))
+        if self.callback is not None and percent != self.last_value:
+            self.last_value = percent
+            self.callback(percent)
 
 
 def _load_imageio_ffmpeg():
@@ -74,14 +91,53 @@ def natural_sort_key(path: Path) -> list[object]:
             for part in re.split(r"(\d+)", path.name)]
 
 
-def collect_image_files(input_folder: Path) -> list[Path]:
-    if not input_folder.is_dir():
-        raise NotADirectoryError(f"Input folder does not exist: {input_folder}")
+def detect_image_sequence(selected_image: Path) -> list[Path]:
+    """Return the numbered sequence represented by one selected image.
+
+    The final numeric run in the filename stem is treated as the frame number.
+    Matching files must have the same prefix, suffix, and extension. When the
+    selected filename has no number, only that file is returned.
+    """
+    selected_image = Path(selected_image).expanduser().resolve()
+    if not selected_image.is_file():
+        raise FileNotFoundError(f"Image file does not exist: {selected_image}")
+    if selected_image.suffix.lower() not in VALID_EXTENSIONS:
+        raise ValueError(f"Unsupported image file: {selected_image}")
+
+    matches = list(re.finditer(r"\d+", selected_image.stem))
+    if not matches:
+        return [selected_image]
+
+    frame_number = matches[-1]
+    prefix = selected_image.stem[:frame_number.start()]
+    suffix = selected_image.stem[frame_number.end():]
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}\d+{re.escape(suffix)}$",
+        re.IGNORECASE,
+    )
+    extension = selected_image.suffix.casefold()
     files = [
-        path for path in input_folder.iterdir()
-        if path.is_file() and path.suffix.lower() in VALID_EXTENSIONS
+        path.resolve()
+        for path in selected_image.parent.iterdir()
+        if path.is_file()
+        and path.suffix.casefold() == extension
+        and pattern.fullmatch(path.stem)
     ]
     return sorted(files, key=natural_sort_key)
+
+
+def collect_image_files(source: Path) -> list[Path]:
+    """Collect supported images from a folder or infer a selected image sequence."""
+    source = Path(source).expanduser().resolve()
+    if source.is_dir():
+        files = [
+            path for path in source.iterdir()
+            if path.is_file() and path.suffix.lower() in VALID_EXTENSIONS
+        ]
+        return sorted(files, key=natural_sort_key)
+    if source.is_file():
+        return detect_image_sequence(source)
+    raise FileNotFoundError(f"Image source does not exist: {source}")
 
 
 def apply_channel_mode(image: Image.Image, mode: str) -> Image.Image:
@@ -99,12 +155,35 @@ def apply_channel_mode(image: Image.Image, mode: str) -> Image.Image:
     raise ValueError(f"Unknown channel mode: {mode}")
 
 
-def fit_video_frame(image: Image.Image, target_size: int, fit_mode: str) -> Image.Image:
+def fit_frame(
+    image: Image.Image,
+    target_size: int,
+    fit_mode: str,
+    channel_mode: str = "RGBA",
+) -> Image.Image:
     fit_mode = fit_mode.lower()
     if fit_mode == "stretch":
         return image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    if fit_mode == "pad":
+        width, height = image.size
+        scale = min(target_size / width, target_size / height)
+        resized = image.convert("RGBA").resize(
+            (
+                min(target_size, max(1, round(width * scale))),
+                min(target_size, max(1, round(height * scale))),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+        background = (0, 0, 0, 0) if channel_mode.upper() == "RGBA" else (0, 0, 0, 255)
+        canvas = Image.new("RGBA", (target_size, target_size), background)
+        left = (target_size - resized.width) // 2
+        top = (target_size - resized.height) // 2
+        # Copy raw RGBA values so RGB Straight keeps the source RGB beneath
+        # transparency; channel conversion happens after fitting.
+        canvas.paste(resized, (left, top))
+        return canvas
     if fit_mode != "crop":
-        raise ValueError(f"video_fit must be one of: {', '.join(VIDEO_FIT_MODES)}")
+        raise ValueError(f"fit_mode must be one of: {', '.join(FRAME_FIT_MODES)}")
     width, height = image.size
     scale = max(target_size / width, target_size / height)
     resized = image.resize(
@@ -114,6 +193,10 @@ def fit_video_frame(image: Image.Image, target_size: int, fit_mode: str) -> Imag
     left = (resized.width - target_size) // 2
     top = (resized.height - target_size) // 2
     return resized.crop((left, top, left + target_size, top + target_size))
+
+
+# Preserve the original helper name for callers that imported it directly.
+fit_video_frame = fit_frame
 
 
 def _video_reader(path: Path, start: float, end: float) -> Iterator[object]:
@@ -126,12 +209,21 @@ def _video_reader(path: Path, start: float, end: float) -> Iterator[object]:
     )
 
 
-def _count_video_range(path: Path, start: float, end: float) -> tuple[int, tuple[int, int]]:
+def _count_video_range(
+    path: Path,
+    start: float,
+    end: float,
+    progress: _ProgressReporter | None = None,
+    estimated_frames: int = 1,
+) -> tuple[int, tuple[int, int]]:
     reader = _video_reader(path, start, end)
     try:
         metadata = next(reader)
         size = tuple(metadata.get("size", (0, 0)))
-        count = sum(1 for _frame in reader)
+        count = 0
+        for count, _frame in enumerate(reader, start=1):
+            if progress is not None:
+                progress.update(5 + min(29, 29 * count / max(1, estimated_frames)))
     finally:
         reader.close()
     if count < 1 or len(size) != 2 or min(size) < 1:
@@ -158,7 +250,10 @@ def make_video_flipbook(
     start: float = 0.0,
     end: float | None = None,
     video_fit: str = "crop",
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[Path, int]:
+    progress = _ProgressReporter(progress_callback)
+    progress.update(0)
     if cols < 1 or rows < 1 or target_size < 1:
         raise ValueError("cols, rows, and target_size must all be at least 1")
     channel_mode = channel_mode.upper()
@@ -184,12 +279,19 @@ def make_video_flipbook(
         raise ValueError(f"結束時間不可超過影片長度 {duration:.3f} 秒。")
     if start >= end:
         raise ValueError("開始時間必須小於結束時間。")
+    progress.update(5)
 
     try:
-        frame_count, frame_size = _count_video_range(path, start, end)
+        estimated_frames = max(
+            1, round((end - start) * max(0.0, float(metadata.get("fps") or 0.0)))
+        )
+        frame_count, frame_size = _count_video_range(
+            path, start, end, progress, estimated_frames
+        )
     except (ValueError, RuntimeError) as exc:
         raise RuntimeError(f"無法解碼指定的影片時間範圍：{exc}") from exc
     wanted = min(cols * rows, frame_count)
+    progress.update(35)
     selected_indices = _even_indices(frame_count, wanted)
     selected_lookup = set(selected_indices)
     canvas = Image.new("RGBA", (cols * target_size, rows * target_size), (0, 0, 0, 0))
@@ -199,10 +301,11 @@ def make_video_flipbook(
     try:
         next(reader)
         for source_index, frame_bytes in enumerate(reader):
+            progress.update(35 + 55 * (source_index + 1) / frame_count)
             if source_index not in selected_lookup:
                 continue
             tile = Image.frombytes("RGB", frame_size, frame_bytes).convert("RGBA")
-            tile = fit_video_frame(tile, target_size, video_fit)
+            tile = fit_frame(tile, target_size, video_fit, channel_mode)
             tile = apply_channel_mode(tile, channel_mode)
             x = (written % cols) * target_size
             y = (written // cols) * target_size
@@ -221,12 +324,14 @@ def make_video_flipbook(
     if fill_empty_with_last and last_tile is not None:
         for index in range(written, cols * rows):
             canvas.paste(last_tile, ((index % cols) * target_size, (index // cols) * target_size))
+    progress.update(95)
 
     output = Path(output_path).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise ValueError("Output filename must use the .png extension")
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output, format="PNG")
+    progress.update(100)
     return output, written
 
 
@@ -238,6 +343,8 @@ def make_flipbook(
     target_size: int,
     channel_mode: str = "RGBA",
     fill_empty_with_last: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    image_fit: str = "stretch",
 ) -> tuple[Path, int]:
     """Build a flipbook and return ``(output_path, frames_written)``.
 
@@ -245,11 +352,16 @@ def make_flipbook(
     visible PNG order as the Blender implementation after accounting for
     Blender's bottom-up pixel buffer and Pillow's top-left image origin.
     """
+    progress = _ProgressReporter(progress_callback)
+    progress.update(0)
     if cols < 1 or rows < 1 or target_size < 1:
         raise ValueError("cols, rows, and target_size must all be at least 1")
     channel_mode = channel_mode.upper()
     if channel_mode not in CHANNEL_MODES:
         raise ValueError(f"channel_mode must be one of: {', '.join(CHANNEL_MODES)}")
+    image_fit = image_fit.lower()
+    if image_fit not in FRAME_FIT_MODES:
+        raise ValueError(f"image_fit must be one of: {', '.join(FRAME_FIT_MODES)}")
 
     source = Path(input_folder).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -261,6 +373,10 @@ def make_flipbook(
     # A smaller grid intentionally keeps only the first frames. This mirrors a
     # fixed-capacity sprite sheet and makes the truncation behavior explicit.
     files_to_write = files[:capacity]
+    fill_count = capacity - len(files_to_write) if fill_empty_with_last else 0
+    work_items = max(1, len(files_to_write) + fill_count)
+    completed_items = 0
+    progress.update(5)
 
     canvas = Image.new("RGBA", (cols * target_size, rows * target_size),
                        (0, 0, 0, 0))
@@ -276,25 +392,29 @@ def make_flipbook(
                 "Pillow builds; convert it to PNG/TIFF first. Details: {exc}"
             ) from exc
 
-        if tile.size != (target_size, target_size):
-            # The Blender add-on stretches each frame to an exact square too.
-            tile = tile.resize((target_size, target_size), Image.Resampling.LANCZOS)
+        tile = fit_frame(tile, target_size, image_fit, channel_mode)
         tile = apply_channel_mode(tile, channel_mode)
         last_tile = tile.copy()
         x = (index % cols) * target_size
         y = (index // cols) * target_size
         canvas.paste(tile, (x, y))
+        completed_items += 1
+        progress.update(5 + 85 * completed_items / work_items)
 
     if fill_empty_with_last and last_tile is not None:
         for index in range(len(files_to_write), capacity):
             x = (index % cols) * target_size
             y = (index // cols) * target_size
             canvas.paste(last_tile, (x, y))
+            completed_items += 1
+            progress.update(5 + 85 * completed_items / work_items)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.suffix.lower() != ".png":
         raise ValueError("Output filename must use the .png extension")
+    progress.update(95)
     canvas.save(output, format="PNG")
+    progress.update(100)
     return output, len(files_to_write)
 
 
@@ -302,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Convert an image sequence or MP4/MOV video into a PNG flipbook."
     )
-    parser.add_argument("source", help="Image-sequence folder or MP4/MOV video")
+    parser.add_argument("source", help="Image-sequence folder, one sequence image, or MP4/MOV video")
     parser.add_argument("output", help="Output PNG path")
     parser.add_argument("--cols", type=int, default=12, help="Grid columns (default: 12)")
     parser.add_argument("--rows", type=int, default=10, help="Grid rows (default: 10)")
@@ -319,7 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", type=float, default=None,
                         help="Video end time in seconds (default: video end)")
     parser.add_argument("--video-fit", choices=VIDEO_FIT_MODES, default="crop",
-                        help="Video frame fitting: crop or stretch (default: crop)")
+                        help="Video frame fitting: crop, stretch, or pad (default: crop)")
     return parser
 
 
@@ -327,7 +447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         source = Path(args.source).expanduser()
-        if source.is_dir():
+        if source.is_dir() or source.suffix.lower() in VALID_EXTENSIONS:
             output, count = make_flipbook(
                 source, args.output, args.cols, args.rows,
                 args.tile_size, args.mode, args.fill_empty_with_last,
@@ -339,7 +459,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.video_fit,
             )
         else:
-            raise ValueError("Source must be an image folder or an MP4/MOV video file")
+            raise ValueError(
+                "Source must be an image folder, a supported image, or an MP4/MOV video file"
+            )
     except (ValueError, OSError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

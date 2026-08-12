@@ -48,10 +48,10 @@ npm run deploy
 
 1. 在 Cloudflare Dashboard 開啟 **Workers & Pages → Create application → Import a repository**。
 2. 選擇 `SenPai-TW/ImageSequenceToFlipbook_Tool`。
-3. Root directory 設為 `/web`，Production branch 設為 `master`。
+3. Root directory 設為 `/web`，Production branch 設為 `main`。
 4. Build command 設為 `npm run check`，Deploy command 使用 `npm run deploy`。
 5. Worker 名稱必須與 `wrangler.jsonc` 的 `image-sequence-to-flipbook` 相同。
-6. 非 `master` 分支由 Workers Builds 建立版本預覽；R2 runtime 共用同一批唯讀、版本化物件。
+6. 非 `main` 分支由 Workers Builds 建立版本預覽；R2 runtime 共用同一批唯讀、版本化物件。
 
 Cloudflare Git 整合不會替新帳號建立或填入 FFmpeg R2 內容，所以必須先完成上一節的第一次發布。
 

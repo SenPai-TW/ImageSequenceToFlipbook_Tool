@@ -2,6 +2,12 @@
 
 本工具從 SenPaiToolBox 的第 5 項功能獨立而來，不需要安裝 Blender。
 
+## 網頁版（Cloudflare）
+
+專案另包含 [`web`](web) 子專案：可部署至 Cloudflare Workers，讓使用者免安裝、免登入地在瀏覽器本機將圖片序列或 MP4／MOV 影片轉成 Flipbook PNG。素材不會上傳，Windows 桌面版仍獨立保留。
+
+完整的本機開發、R2 runtime 初始化、Cloudflare 首次發布與 GitHub 自動部署步驟請見 [`web/README.md`](web/README.md)。
+
 ## 單一 EXE 版
 
 已建置的 `FlipbookGenerator.exe` 可直接在 Windows 10／11 64 位元執行，不需要另外安裝 Python、Pillow 或 FFmpeg。EXE 同時包含圖片序列與 MP4／MOV 影片功能。

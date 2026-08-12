@@ -1,0 +1,43 @@
+Image Sequence to Flipbook — Web Edition
+Third-party software notices
+
+This application performs media conversion locally in the user's browser.
+It includes or downloads the following open-source components as part of the
+application runtime. Source code and full license texts are available from the
+linked upstream projects and installed package distributions.
+
+ffmpeg.wasm / @ffmpeg/ffmpeg / @ffmpeg/util
+Copyright (c) Jerome Wu and contributors
+License: MIT
+Source: https://github.com/ffmpegwasm/ffmpeg.wasm
+
+@ffmpeg/core / @ffmpeg/core-mt and FFmpeg
+FFmpeg is free software licensed under the GNU Lesser General Public License
+(LGPL) version 2.1 or later; the distributed ffmpeg.wasm core may include
+components under GNU GPL version 2 or later. No local modifications are made.
+Source and build scripts: https://github.com/ffmpegwasm/ffmpeg.wasm
+FFmpeg source: https://ffmpeg.org/download.html
+
+jSquash packages (@jsquash/png, @jsquash/jpeg, @jsquash/resize)
+Copyright their respective authors and contributors
+License: Apache License 2.0
+Source: https://github.com/jamsinclair/jSquash
+
+UTIF.js
+Copyright (c) Photopea and contributors
+License: MIT
+Source: https://github.com/photopea/UTIF.js
+
+React
+Copyright (c) Meta Platforms, Inc. and affiliates
+License: MIT
+Source: https://github.com/facebook/react
+
+Cloudflare Vite plugin and Wrangler
+Copyright Cloudflare, Inc. and contributors
+License: MIT / Apache License 2.0 as declared by each package
+Source: https://github.com/cloudflare/workers-sdk
+
+This notice is informational and does not replace the license files supplied
+with each dependency. Run `npm install` and inspect `node_modules/<package>`
+for the exact license text shipped with the pinned version.

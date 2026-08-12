@@ -1,0 +1,49 @@
+{
+  "name": "image-sequence-to-flipbook-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/vite.mjs",
+    "build": "tsc -b && node scripts/vite.mjs build",
+    "deploy": "npm run build && node scripts/wrangler.mjs deploy",
+    "deploy:dry-run": "npm run build && node scripts/wrangler.mjs deploy --dry-run",
+    "types": "node scripts/wrangler.mjs types",
+    "types:check": "node scripts/wrangler.mjs types --check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node scripts/playwright.mjs test",
+    "check": "npm run types:check && npm run test && npm run build",
+    "runtime:stage": "node scripts/stage-runtime.mjs",
+    "runtime:seed": "npm run runtime:stage && node scripts/publish-runtime.mjs --local",
+    "runtime:publish": "npm run runtime:stage && node scripts/publish-runtime.mjs --remote"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "0.12.10",
+    "@ffmpeg/core-mt": "0.12.10",
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@ffmpeg/util": "0.12.2",
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@jsquash/resize": "2.1.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "utif": "3.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.51.3",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@types/utif": "3.0.6",
+    "@vitejs/plugin-react": "6.0.5",
+    "typescript": "7.0.2",
+    "vite": "8.2.1",
+    "vitest": "4.1.10",
+    "wrangler": "4.121.0"
+  }
+}

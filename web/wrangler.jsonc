@@ -9,12 +9,15 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/runtime/ffmpeg/*"]
   },
-  "r2_buckets": [
-    {
-      "binding": "FFMPEG_RUNTIME",
-      "bucket_name": "flipbook-ffmpeg-runtime"
-    }
-  ],
+  // R2 is intentionally disabled for the first free deployment. The FFmpeg
+  // runtime route and browser video implementation remain in the codebase.
+  // Re-enable the binding below after R2 has been activated and populated:
+  // "r2_buckets": [
+  //   {
+  //     "binding": "FFMPEG_RUNTIME",
+  //     "bucket_name": "flipbook-ffmpeg-runtime"
+  //   }
+  // ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.05,

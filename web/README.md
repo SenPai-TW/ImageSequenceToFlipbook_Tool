@@ -33,6 +33,14 @@ npm run test:e2e -- --project=chromium
 
 ## 第一次 Cloudflare 發布
 
+### 暫時不啟用 R2
+
+目前 `wrangler.jsonc` 已暫時註解 `FFMPEG_RUNTIME` 的 R2 binding，讓尚未啟用 R2 的帳號也能先部署網站。圖片序列功能可以正常使用；影片介面與處理程式仍保留，但 runtime 請求會回傳 `503`，因此 MP4／MOV 暫時無法執行。
+
+未來啟用 R2 時，依 `wrangler.jsonc` 內的註解恢復 `r2_buckets` 設定，建立並填入 `flipbook-ffmpeg-runtime` bucket，再重新部署即可，不需要復原影片程式碼。
+
+### 啟用完整影片功能
+
 先登入並建立專用 bucket：
 
 ```powershell
@@ -48,10 +56,10 @@ npm run deploy
 
 1. 在 Cloudflare Dashboard 開啟 **Workers & Pages → Create application → Import a repository**。
 2. 選擇 `SenPai-TW/ImageSequenceToFlipbook_Tool`。
-3. Root directory 設為 `/web`，Production branch 設為 `main`。
-4. Build command 設為 `npm run check`，Deploy command 使用 `npm run deploy`。
+3. Root directory 設為 `/web`，Production branch 設為 `master`。
+4. Build command 設為 `npm run types && npm run check`，Deploy command 使用 `npm run deploy`。
 5. Worker 名稱必須與 `wrangler.jsonc` 的 `image-sequence-to-flipbook` 相同。
-6. 非 `main` 分支由 Workers Builds 建立版本預覽；R2 runtime 共用同一批唯讀、版本化物件。
+6. 非 `master` 分支由 Workers Builds 建立版本預覽；R2 runtime 共用同一批唯讀、版本化物件。
 
 Cloudflare Git 整合不會替新帳號建立或填入 FFmpeg R2 內容，所以必須先完成上一節的第一次發布。
 

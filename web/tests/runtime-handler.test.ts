@@ -26,6 +26,21 @@ function runtimeEnv(body: string | null = "runtime-binary"): RuntimeEnv {
 }
 
 describe("FFmpeg runtime endpoint", () => {
+  it("returns 503 while the optional R2 binding is disabled", async () => {
+    const response = await handleRequest(
+      new Request("https://example.com/runtime/ffmpeg/0.12.10/st/ffmpeg-core.wasm"),
+      {
+        ASSETS: {
+          fetch: async () => new Response("spa"),
+        },
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("FFmpeg runtime is not configured");
+  });
+
   it("streams a versioned object with immutable cache metadata", async () => {
     const response = await handleRequest(
       new Request("https://example.com/runtime/ffmpeg/0.12.10/st/ffmpeg-core.wasm"),

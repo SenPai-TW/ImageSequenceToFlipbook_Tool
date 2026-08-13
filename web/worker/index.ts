@@ -9,7 +9,7 @@ interface RuntimeObject {
 
 export interface RuntimeEnv {
   ASSETS: { fetch(request: Request): Promise<Response> };
-  FFMPEG_RUNTIME: {
+  FFMPEG_RUNTIME?: {
     get(key: string): Promise<RuntimeObject | null>;
     head(key: string): Promise<RuntimeObject | null>;
   };
@@ -39,6 +39,16 @@ async function runtimeResponse(
     return new Response("Method Not Allowed", {
       status: 405,
       headers: { ...securityHeaders(), Allow: "GET, HEAD" },
+    });
+  }
+
+  if (env.FFMPEG_RUNTIME === undefined) {
+    return new Response("FFmpeg runtime is not configured", {
+      status: 503,
+      headers: {
+        ...securityHeaders(),
+        "Cache-Control": "no-store",
+      },
     });
   }
 

@@ -80,6 +80,22 @@ FIT_DESCRIPTIONS = {
         "保持完整畫面與原始比例並置中；空白區域在 RGBA 模式為透明，其他模式為黑色。"
     ),
 }
+
+
+def is_power_of_two(value: int) -> bool:
+    """Return whether a positive integer is an exact power of two."""
+    return value > 0 and value & (value - 1) == 0
+
+
+def calculate_full_size(
+    cols: int, rows: int, tile_size: int
+) -> tuple[int, int, bool]:
+    """Return the full texture dimensions and whether both are powers of two."""
+    width = cols * tile_size
+    height = rows * tile_size
+    return width, height, is_power_of_two(width) and is_power_of_two(height)
+
+
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
 THEME_PALETTES = {
@@ -425,6 +441,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.video_fit_var = self.fit_var
         self.count_var = tk.StringVar(value="請選擇序列中的一張圖片")
         self.capacity_var = tk.StringVar(value="目前設定總網格數：8 × 8 = 64 格")
+        self.full_size_var = tk.StringVar(value="完整尺寸：2048 × 2048 pixel")
         self.detail_var = tk.StringVar(value="完整保留 Alpha 透明去背通道背景輸出。")
         self.fit_detail_var = tk.StringVar(
             value=FIT_DESCRIPTIONS["延伸空白畫布至正方形"]
@@ -481,7 +498,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                     self._overlay = None
         self.after_idle(self._fit_initial_window)
         for variable in (
-            self.cols_var, self.rows_var,
+            self.cols_var, self.rows_var, self.size_var,
             self.video_start_var, self.video_end_var,
         ):
             variable.trace_add("write", self._settings_changed)
@@ -579,6 +596,10 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         style.configure(
             "WarningText.TLabel", background=panel,
             foreground=palette["error_text"], font=(family, 9),
+        )
+        style.configure(
+            "PowerOfTwoWarning.TLabel", background=panel,
+            foreground=palette["error_text"], font=(family, 9, "bold"),
         )
 
         for button_style, vertical_padding in (
@@ -901,20 +922,51 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         )
         self.fit_combo.grid(row=2, column=3, sticky="ew", pady=5)
 
-        capacity_line = ttk.Frame(settings, style="PanelFlat.TFrame")
-        capacity_line.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(12, 6))
-        ttk.Label(capacity_line, textvariable=self.capacity_var, style="Hint.Panel.TLabel").pack(side="left")
-        self.warning_icon = ttk.Label(capacity_line, text="!", style="WarningIcon.TLabel")
-        self.warning_text = ttk.Label(capacity_line, text="需求的圖片總格數不足，多的格數會被刪掉", style="WarningText.TLabel")
+        self.capacity_label = ttk.Label(
+            settings, textvariable=self.capacity_var,
+            style="Hint.Panel.TLabel",
+        )
+        self.capacity_label.grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(12, 6)
+        )
+        self.full_size_label = ttk.Label(
+            settings, textvariable=self.full_size_var,
+            style="Hint.Panel.TLabel",
+        )
+        self.full_size_label.grid(
+            row=3, column=2, sticky="w", pady=(12, 6)
+        )
+        self.power_of_two_warning = ttk.Label(
+            settings,
+            text="! 建議圖片寬 × 高尺寸皆為 2 的次方",
+            style="PowerOfTwoWarning.TLabel",
+        )
+        self.capacity_warning_line = ttk.Frame(
+            settings, style="PanelFlat.TFrame"
+        )
+        self.capacity_warning_line.grid(
+            row=4, column=0, columnspan=4, sticky="ew", pady=(4, 0)
+        )
+        self.capacity_warning_line.grid_remove()
+        self.warning_icon = ttk.Label(
+            self.capacity_warning_line, text="!", style="WarningIcon.TLabel"
+        )
+        self.warning_icon.pack(side="left", padx=(0, 5))
+        self.warning_text = ttk.Label(
+            self.capacity_warning_line,
+            text="需求的圖片總格數不足，多的格數會被刪掉",
+            style="WarningText.TLabel",
+        )
+        self.warning_text.pack(side="left")
         self.fill_check = ttk.Checkbutton(settings, text="用最後一格補齊剩餘空格", variable=self.fill_empty_var)
-        self.fill_check.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 9))
+        self.fill_check.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 9))
         self.fill_check.grid_remove()
 
         self.detail_canvas = tk.Canvas(
             settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
-        self.detail_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
+        self.detail_canvas.grid(row=6, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
         self.detail_title_id = self.detail_canvas.create_text(
             0, 14, text="ⓘ  通道模式說明", anchor="nw",
             fill=self._palette["heading_text"],
@@ -930,7 +982,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             highlightthickness=0, bd=0,
         )
         self.fit_detail_canvas.grid(
-            row=5, column=2, columnspan=2, sticky="ew", pady=(8, 0)
+            row=6, column=2, columnspan=2, sticky="ew", pady=(8, 0)
         )
         self.fit_detail_title_id = self.fit_detail_canvas.create_text(
             0, 14, text="ⓘ  畫面適配說明", anchor="nw",
@@ -1450,22 +1502,34 @@ class FlipbookApp(tk.Tk, DndRootMixin):
 
     def _update_capacity(self) -> None:
         try:
-            cols, rows = self.cols_var.get(), self.rows_var.get()
+            cols, rows, size = (
+                self.cols_var.get(), self.rows_var.get(), self.size_var.get()
+            )
             capacity = cols * rows
+            full_width, full_height, uses_power_of_two_dimensions = (
+                calculate_full_size(cols, rows, size)
+            )
             self.capacity_var.set(f"目前設定總網格數：{cols} × {rows} = {capacity} 格（左到右、上到下）")
+            self.full_size_var.set(
+                f"完整尺寸：{full_width} × {full_height} pixel"
+            )
+            if uses_power_of_two_dimensions:
+                self.power_of_two_warning.grid_remove()
+            elif not self.power_of_two_warning.winfo_manager():
+                self.power_of_two_warning.grid(
+                    row=3, column=3, sticky="e", padx=(16, 0), pady=(12, 6)
+                )
             if self._source_count > capacity:
                 if self._current_source_kind() != SOURCE_VIDEO:
                     self.warning_text.configure(text="需求的圖片總格數不足，多的格數會被刪掉")
                 else:
                     self.warning_text.configure(text="影片影格多於網格容量，將平均抽取整段範圍")
-                if not self.warning_icon.winfo_ismapped():
-                    self.warning_icon.pack(side="left", padx=(10, 5))
-                    self.warning_text.pack(side="left")
+                if not self.capacity_warning_line.winfo_manager():
+                    self.capacity_warning_line.grid()
                 self.fill_check.grid_remove()
                 self.fill_empty_var.set(False)
             else:
-                self.warning_icon.pack_forget()
-                self.warning_text.pack_forget()
+                self.capacity_warning_line.grid_remove()
                 if self._source_count > 0 and capacity > self._source_count:
                     self.fill_check.grid()
                 else:
@@ -1473,6 +1537,8 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                     self.fill_empty_var.set(False)
         except tk.TclError:
             self.capacity_var.set("欄數與列數必須是整數")
+            self.full_size_var.set("完整尺寸：—")
+            self.power_of_two_warning.grid_remove()
 
     def _start(self) -> None:
         if self._busy:

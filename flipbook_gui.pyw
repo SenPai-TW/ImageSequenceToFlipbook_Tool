@@ -15,6 +15,8 @@ from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from flipbook_version import APP_VERSION, APP_VERSION_TAG
+
 try:
     from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 except ModuleNotFoundError:
@@ -438,7 +440,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                 # Browsing and generation remain available when TkDnD's native
                 # runtime is absent or cannot be loaded in an older install.
                 pass
-        self.title("圖片序列／影片轉 Flipbook")
+        self.title(f"圖片序列／影片轉 Flipbook {APP_VERSION_TAG}")
         initial_width = min(960, max(720, self.winfo_screenwidth() - 64))
         initial_height = calculate_window_height(760, self.winfo_screenheight())
         self.geometry(f"{initial_width}x{initial_height}")

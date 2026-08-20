@@ -2,15 +2,25 @@
 
 本工具從 SenPaiToolBox 的第 5 項功能獨立而來，不需要安裝 Blender。
 
-## 網頁版（Cloudflare）
+目前版本：**v3.1**
 
-專案另包含 [`web`](web) 子專案：可部署至 Cloudflare Workers，讓使用者免安裝、免登入地在瀏覽器本機將圖片序列或 MP4／MOV 影片轉成 Flipbook PNG。素材不會上傳，Windows 桌面版仍獨立保留。
+## 版本維護
 
-完整的本機開發、R2 runtime 初始化、Cloudflare 首次發布與 GitHub 自動部署步驟請見 [`web/README.md`](web/README.md)。
+產品版本採 `v主版號.次版號`；Web 套件依 SemVer 補上修訂號，例如產品 `v3.1` 對應 Web `3.1.0`。
+
+每次功能或修正準備發布時，必須同步更新：
+
+1. [`flipbook_version.py`](flipbook_version.py)：桌面程式的版本來源與視窗標題。
+2. [`web/package.json`](web/package.json) 與 [`web/package-lock.json`](web/package-lock.json)：Web 套件版本。
+3. 本 README 的「目前版本」。
+4. [`HANDOFF.md`](HANDOFF.md) 的目前產品版本與待辦狀態。
+5. 完成驗證與建置後，才建立相同版本的 Git tag；commit、tag 與 push 仍需分別確認。
+
+[`tests/test_version_metadata.py`](tests/test_version_metadata.py) 會檢查上述版本是否一致，避免後續更新漏改其中一處。
 
 ## 單一 EXE 版
 
-已建置的 `FlipbookGenerator.exe` 可直接在 Windows 10／11 64 位元執行，不需要另外安裝 Python、Pillow 或 FFmpeg。EXE 同時包含圖片序列與 MP4／MOV 影片功能。
+已建置的 `FlipbookGenerator.exe` 可直接在 Windows 10／11 64 位元執行；取得後直接雙擊即可，不需要另外安裝 Python、Pillow 或 FFmpeg。EXE 同時包含圖片序列與 MP4／MOV 影片功能。
 
 單檔版會在啟動時將必要元件解壓到 Windows 暫存目錄，因此冷啟動可能比原始碼版本慢。檔案預估約 45–70 MB；未經程式碼簽章的自行建置版本也可能觸發 Windows SmartScreen 提示。
 
@@ -31,17 +41,20 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 
 PyInstaller 需從官方 PyPI 下載，因此第一次建置需要網路；其餘執行依賴均優先使用專案內附檔案。若內附 Python 無法驗證系統的 TLS 憑證鏈，腳本會限定對 `pypi.org` 與 `files.pythonhosted.org` 使用 pip 的 trusted-host 後備方式。重複建置會沿用專案專用的 Python 與虛擬環境。
 
-## 安裝
+## Python 視窗版（使用 .vbs）
+
+使用 `.vbs` 啟動的原始碼版本需要先安裝 Python 與必要套件；單一 EXE 版不需要執行以下安裝。
+
+### 安裝必要套件
 
 雙擊 `安裝必要套件.bat` 後，安裝程式會先嘗試從 Python 官方網站安裝最新版 64 位元 Python，接著透過 pip 安裝 Pillow、`imageio-ffmpeg` 與 `tkinterdnd2`。若線上下載或安裝失敗，會自動改用 `installers` 資料夾內附的 Python 3.11.8、Pillow 12.3.0、imageio-ffmpeg 0.6.0 與 tkinterdnd2 0.6.2，圖片序列、拖放及 MP4／MOV 影片功能皆可離線安裝使用。
 
-## 視窗版使用方式（推薦）
+### 使用方式
 
-1. 第一次使用時，雙擊 `安裝必要套件.bat`。
-2. 安裝完成後，雙擊 `開啟Flipbook工具.vbs`。
-3. 選擇「序列圖片（選其中一張）」、「圖片資料夾」或「影片（MP4／MOV）」及存檔位置。也可以將單一來源直接拖入整個視窗。
-4. 設定欄數、列數、單格尺寸、通道模式及畫面適配方式。影片可另外設定起訖秒數。
-5. 按下「執行生成 Flipbook 網格圖」。
+1. 安裝完成後，雙擊 `開啟Flipbook工具.vbs`。
+2. 選擇「序列圖片（選其中一張）」、「圖片資料夾」或「影片（MP4／MOV）」及存檔位置。也可以將單一來源直接拖入整個視窗。
+3. 設定欄數、列數、單格尺寸、通道模式及畫面適配方式。影片可另外設定起訖秒數。
+4. 按下「執行生成 Flipbook 網格圖」。
 
 視窗右上角的滑動開關可即時切換深色與淺色主題；預設為深色。
 
@@ -125,3 +138,9 @@ make_flipbook(
     image_fit="pad",  # crop、stretch 或 pad；省略時維持舊版 stretch 行為
 )
 ```
+
+## 網頁版（Cloudflare）
+
+專案另包含 [`web`](web) 子專案：可部署至 Cloudflare Workers，讓使用者免安裝、免登入地在瀏覽器本機將圖片序列或 MP4／MOV 影片轉成 Flipbook PNG。素材不會上傳，Windows 桌面版仍獨立保留。
+
+完整的本機開發、R2 runtime 初始化、Cloudflare 首次發布與 GitHub 自動部署步驟請見 [`web/README.md`](web/README.md)。

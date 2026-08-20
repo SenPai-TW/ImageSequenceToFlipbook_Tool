@@ -12,3 +12,10 @@ build/
 dist/
 *.spec.bak
 
+# Web application build and local Cloudflare state
+web/node_modules/
+web/dist/
+web/.wrangler/
+web/.runtime/
+web/playwright-report/
+web/test-results/

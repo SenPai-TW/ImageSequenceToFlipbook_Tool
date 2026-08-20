@@ -80,6 +80,30 @@ FIT_DESCRIPTIONS = {
         "保持完整畫面與原始比例並置中；空白區域在 RGBA 模式為透明，其他模式為黑色。"
     ),
 }
+
+
+def is_power_of_two(value: int) -> bool:
+    """Return whether a positive integer is an exact power of two."""
+    return value > 0 and value & (value - 1) == 0
+
+
+def calculate_full_size(
+    cols: int, rows: int, tile_size: int
+) -> tuple[int, int, bool]:
+    """Return the full texture dimensions and whether both are powers of two."""
+    width = cols * tile_size
+    height = rows * tile_size
+    return width, height, is_power_of_two(width) and is_power_of_two(height)
+
+
+def calculate_window_height(
+    requested_height: int, screen_height: int, reserved_height: int = 96
+) -> int:
+    """Clamp the initial window height to the usable vertical screen space."""
+    available_height = max(1, screen_height - reserved_height)
+    return min(requested_height, available_height)
+
+
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
 THEME_PALETTES = {
@@ -98,6 +122,10 @@ THEME_PALETTES = {
         "disabled_bg": "#30363B",
         "progress_track": "#171B20",
         "progress_fill": "#5F96C7",
+        "scrollbar_track": "#1F2328",
+        "scrollbar_thumb": "#3A424A",
+        "scrollbar_thumb_hover": "#53606B",
+        "scrollbar_thumb_pressed": "#667582",
         "heading_text": "#F2F5F7",
         "normal_text": "#E4E9ED",
         "input_text": "#E4E9ED",
@@ -124,6 +152,10 @@ THEME_PALETTES = {
         "disabled_bg": "#DFDDD9",
         "progress_track": "#D9D7D2",
         "progress_fill": "#74899C",
+        "scrollbar_track": "#F1F0ED",
+        "scrollbar_thumb": "#C8C6C1",
+        "scrollbar_thumb_hover": "#ABA9A4",
+        "scrollbar_thumb_pressed": "#8E8C87",
         "heading_text": "#34383B",
         "normal_text": "#484C4F",
         "input_text": "#3F4346",
@@ -407,8 +439,10 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                 # runtime is absent or cannot be loaded in an older install.
                 pass
         self.title("圖片序列／影片轉 Flipbook")
-        self.geometry("960x760")
-        self.minsize(900, 640)
+        initial_width = min(960, max(720, self.winfo_screenwidth() - 64))
+        initial_height = calculate_window_height(760, self.winfo_screenheight())
+        self.geometry(f"{initial_width}x{initial_height}")
+        self.minsize(720, 360)
 
         self.theme_var = tk.StringVar(value=THEME_DARK)
         self.source_var = tk.StringVar()
@@ -425,6 +459,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.video_fit_var = self.fit_var
         self.count_var = tk.StringVar(value="請選擇序列中的一張圖片")
         self.capacity_var = tk.StringVar(value="目前設定總網格數：8 × 8 = 64 格")
+        self.full_size_var = tk.StringVar(value="完整尺寸：2048 × 2048 pixel")
         self.detail_var = tk.StringVar(value="完整保留 Alpha 透明去背通道背景輸出。")
         self.fit_detail_var = tk.StringVar(
             value=FIT_DESCRIPTIONS["延伸空白畫布至正方形"]
@@ -437,6 +472,10 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.fit_detail_canvas: tk.Canvas | None = None
         self.fit_detail_text_id: int | None = None
         self.theme_toggle_canvas: tk.Canvas | None = None
+        self.viewport_canvas: tk.Canvas | None = None
+        self.viewport_scrollbar: ttk.Scrollbar | None = None
+        self.main_frame: ttk.Frame | None = None
+        self._viewport_window_id: int | None = None
         self._theme_after_id: str | None = None
         self._theme_knob_x = 9.0
         self.output_folder_button: ttk.Button | None = None
@@ -481,7 +520,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                     self._overlay = None
         self.after_idle(self._fit_initial_window)
         for variable in (
-            self.cols_var, self.rows_var,
+            self.cols_var, self.rows_var, self.size_var,
             self.video_start_var, self.video_end_var,
         ):
             variable.trace_add("write", self._settings_changed)
@@ -520,6 +559,16 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             ("Combobox.padding", {"sticky": "nsew", "children": [
                 ("Combobox.textarea", {"sticky": "nsew"}),
             ]}),
+        ])
+        self._style.layout("Minimal.Vertical.TScrollbar", [
+            ("Vertical.Scrollbar.trough", {
+                "sticky": "ns",
+                "children": [
+                    ("Vertical.Scrollbar.thumb", {
+                        "expand": "1", "sticky": "nswe",
+                    }),
+                ],
+            }),
         ])
         self._apply_theme_styles(THEME_PALETTES[self.theme_var.get()])
 
@@ -580,6 +629,39 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             "WarningText.TLabel", background=panel,
             foreground=palette["error_text"], font=(family, 9),
         )
+        style.configure(
+            "PowerOfTwoWarning.TLabel", background=panel,
+            foreground=palette["error_text"], font=(family, 9, "bold"),
+        )
+        style.configure(
+            "Minimal.Vertical.TScrollbar",
+            background=palette["scrollbar_thumb"],
+            troughcolor=palette["scrollbar_track"],
+            bordercolor=palette["scrollbar_track"],
+            lightcolor=palette["scrollbar_thumb"],
+            darkcolor=palette["scrollbar_thumb"],
+            relief="flat", borderwidth=0, width=10,
+        )
+        style.map(
+            "Minimal.Vertical.TScrollbar",
+            background=[
+                ("pressed", palette["scrollbar_thumb_pressed"]),
+                ("active", palette["scrollbar_thumb_hover"]),
+                ("!active", palette["scrollbar_thumb"]),
+            ],
+            lightcolor=[
+                ("pressed", palette["scrollbar_thumb_pressed"]),
+                ("active", palette["scrollbar_thumb_hover"]),
+                ("!active", palette["scrollbar_thumb"]),
+            ],
+            darkcolor=[
+                ("pressed", palette["scrollbar_thumb_pressed"]),
+                ("active", palette["scrollbar_thumb_hover"]),
+                ("!active", palette["scrollbar_thumb"]),
+            ],
+        )
+        if self.viewport_canvas is not None:
+            self.viewport_canvas.configure(bg=bg)
 
         for button_style, vertical_padding in (
             ("TButton", 7), ("Browse.TButton", 7),
@@ -821,13 +903,14 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         if not video_was_visible:
             self.video_options.grid()
             self.update_idletasks()
-        requested = self.winfo_reqheight() + 16
+        requested = self.main_frame.winfo_reqheight() + 16
         if not video_was_visible:
             self.video_options.grid_remove()
             self.update_idletasks()
-        available = max(640, self.winfo_screenheight() - 96)
-        height = min(requested, available)
-        width = max(960, self.winfo_reqwidth())
+        height = calculate_window_height(requested, self.winfo_screenheight())
+        requested_width = self.main_frame.winfo_reqwidth() + 36
+        available_width = max(1, self.winfo_screenwidth() - 64)
+        width = min(max(720, requested_width), available_width)
         self.geometry(f"{width}x{height}")
         if self._overlay is not None and self._overlay_prime_after_id is None:
             # Let Windows map the final root geometry before creating the
@@ -838,8 +921,25 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             )
 
     def _build_ui(self) -> None:
-        main = ttk.Frame(self, padding=(20, 14, 20, 12))
-        main.pack(fill="both", expand=True)
+        self.viewport_canvas = tk.Canvas(
+            self, bg=self._palette["window_bg"], highlightthickness=0, bd=0,
+        )
+        self.viewport_scrollbar = ttk.Scrollbar(
+            self, orient="vertical", command=self.viewport_canvas.yview,
+            style="Minimal.Vertical.TScrollbar",
+        )
+        self.viewport_canvas.configure(yscrollcommand=self.viewport_scrollbar.set)
+        self.viewport_scrollbar.pack(side="right", fill="y")
+        self.viewport_canvas.pack(side="left", fill="both", expand=True)
+
+        main = ttk.Frame(self.viewport_canvas, padding=(20, 14, 20, 12))
+        self.main_frame = main
+        self._viewport_window_id = self.viewport_canvas.create_window(
+            (0, 0), window=main, anchor="nw"
+        )
+        main.bind("<Configure>", self._update_viewport_scroll_region)
+        self.viewport_canvas.bind("<Configure>", self._resize_viewport_content)
+        self.bind("<MouseWheel>", self._scroll_viewport, add="+")
         main.columnconfigure(0, weight=1)
 
         ttk.Label(main, text="Flipbook Texture Sheet Generator", style="Title.TLabel").grid(row=0, column=0, sticky="w")
@@ -901,20 +1001,51 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         )
         self.fit_combo.grid(row=2, column=3, sticky="ew", pady=5)
 
-        capacity_line = ttk.Frame(settings, style="PanelFlat.TFrame")
-        capacity_line.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(12, 6))
-        ttk.Label(capacity_line, textvariable=self.capacity_var, style="Hint.Panel.TLabel").pack(side="left")
-        self.warning_icon = ttk.Label(capacity_line, text="!", style="WarningIcon.TLabel")
-        self.warning_text = ttk.Label(capacity_line, text="需求的圖片總格數不足，多的格數會被刪掉", style="WarningText.TLabel")
+        self.capacity_label = ttk.Label(
+            settings, textvariable=self.capacity_var,
+            style="Hint.Panel.TLabel",
+        )
+        self.capacity_label.grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(12, 6)
+        )
+        self.full_size_label = ttk.Label(
+            settings, textvariable=self.full_size_var,
+            style="Hint.Panel.TLabel",
+        )
+        self.full_size_label.grid(
+            row=3, column=2, sticky="w", pady=(12, 6)
+        )
+        self.power_of_two_warning = ttk.Label(
+            settings,
+            text="! 建議圖片寬 × 高尺寸皆為 2 的次方",
+            style="PowerOfTwoWarning.TLabel",
+        )
+        self.capacity_warning_line = ttk.Frame(
+            settings, style="PanelFlat.TFrame"
+        )
+        self.capacity_warning_line.grid(
+            row=4, column=0, columnspan=4, sticky="ew", pady=(4, 0)
+        )
+        self.capacity_warning_line.grid_remove()
+        self.warning_icon = ttk.Label(
+            self.capacity_warning_line, text="!", style="WarningIcon.TLabel"
+        )
+        self.warning_icon.pack(side="left", padx=(0, 5))
+        self.warning_text = ttk.Label(
+            self.capacity_warning_line,
+            text="需求的圖片總格數不足，多的格數會被刪掉",
+            style="WarningText.TLabel",
+        )
+        self.warning_text.pack(side="left")
         self.fill_check = ttk.Checkbutton(settings, text="用最後一格補齊剩餘空格", variable=self.fill_empty_var)
-        self.fill_check.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 9))
+        self.fill_check.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 9))
         self.fill_check.grid_remove()
 
         self.detail_canvas = tk.Canvas(
             settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
-        self.detail_canvas.grid(row=5, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
+        self.detail_canvas.grid(row=6, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
         self.detail_title_id = self.detail_canvas.create_text(
             0, 14, text="ⓘ  通道模式說明", anchor="nw",
             fill=self._palette["heading_text"],
@@ -930,7 +1061,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             highlightthickness=0, bd=0,
         )
         self.fit_detail_canvas.grid(
-            row=5, column=2, columnspan=2, sticky="ew", pady=(8, 0)
+            row=6, column=2, columnspan=2, sticky="ew", pady=(8, 0)
         )
         self.fit_detail_title_id = self.fit_detail_canvas.create_text(
             0, 14, text="ⓘ  畫面適配說明", anchor="nw",
@@ -1044,6 +1175,33 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             self.video_options.grid()
             self.count_var.set("請選擇 MP4 或 MOV 影片")
         self._update_capacity()
+
+    def _update_viewport_scroll_region(self, _event: object | None = None) -> None:
+        if self.viewport_canvas is not None:
+            bounds = self.viewport_canvas.bbox("all")
+            if bounds is not None:
+                self.viewport_canvas.configure(scrollregion=bounds)
+
+    def _resize_viewport_content(self, event: object) -> None:
+        if self.viewport_canvas is None or self._viewport_window_id is None:
+            return
+        width = max(1, int(getattr(event, "width", 1)))
+        self.viewport_canvas.itemconfigure(self._viewport_window_id, width=width)
+
+    def _scroll_viewport(self, event: object) -> str | None:
+        if self.viewport_canvas is None:
+            return None
+        widget = getattr(event, "widget", None)
+        if widget is not None and widget.winfo_class() in {"TSpinbox", "TCombobox"}:
+            return None
+        bounds = self.viewport_canvas.bbox("all")
+        if bounds is None or bounds[3] - bounds[1] <= self.viewport_canvas.winfo_height():
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.viewport_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+            return "break"
+        return None
 
     def _set_source_type(self, source_kind: str) -> None:
         target = SOURCE_TYPE_LABELS[source_kind]
@@ -1450,22 +1608,34 @@ class FlipbookApp(tk.Tk, DndRootMixin):
 
     def _update_capacity(self) -> None:
         try:
-            cols, rows = self.cols_var.get(), self.rows_var.get()
+            cols, rows, size = (
+                self.cols_var.get(), self.rows_var.get(), self.size_var.get()
+            )
             capacity = cols * rows
+            full_width, full_height, uses_power_of_two_dimensions = (
+                calculate_full_size(cols, rows, size)
+            )
             self.capacity_var.set(f"目前設定總網格數：{cols} × {rows} = {capacity} 格（左到右、上到下）")
+            self.full_size_var.set(
+                f"完整尺寸：{full_width} × {full_height} pixel"
+            )
+            if uses_power_of_two_dimensions:
+                self.power_of_two_warning.grid_remove()
+            elif not self.power_of_two_warning.winfo_manager():
+                self.power_of_two_warning.grid(
+                    row=3, column=3, sticky="e", padx=(16, 0), pady=(12, 6)
+                )
             if self._source_count > capacity:
                 if self._current_source_kind() != SOURCE_VIDEO:
                     self.warning_text.configure(text="需求的圖片總格數不足，多的格數會被刪掉")
                 else:
                     self.warning_text.configure(text="影片影格多於網格容量，將平均抽取整段範圍")
-                if not self.warning_icon.winfo_ismapped():
-                    self.warning_icon.pack(side="left", padx=(10, 5))
-                    self.warning_text.pack(side="left")
+                if not self.capacity_warning_line.winfo_manager():
+                    self.capacity_warning_line.grid()
                 self.fill_check.grid_remove()
                 self.fill_empty_var.set(False)
             else:
-                self.warning_icon.pack_forget()
-                self.warning_text.pack_forget()
+                self.capacity_warning_line.grid_remove()
                 if self._source_count > 0 and capacity > self._source_count:
                     self.fill_check.grid()
                 else:
@@ -1473,6 +1643,8 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                     self.fill_empty_var.set(False)
         except tk.TclError:
             self.capacity_var.set("欄數與列數必須是整數")
+            self.full_size_var.set("完整尺寸：—")
+            self.power_of_two_warning.grid_remove()
 
     def _start(self) -> None:
         if self._busy:

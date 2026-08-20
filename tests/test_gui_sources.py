@@ -16,6 +16,48 @@ GUI = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GUI)
 
 
+class GridSummaryTests(unittest.TestCase):
+    def test_both_themes_define_minimal_scrollbar_colors(self) -> None:
+        required = {
+            "scrollbar_track",
+            "scrollbar_thumb",
+            "scrollbar_thumb_hover",
+            "scrollbar_thumb_pressed",
+        }
+        for palette in GUI.THEME_PALETTES.values():
+            self.assertTrue(required.issubset(palette))
+
+    def test_small_screen_window_height_never_exceeds_available_space(self) -> None:
+        self.assertEqual(
+            GUI.calculate_window_height(
+                requested_height=760,
+                screen_height=600,
+                reserved_height=96,
+            ),
+            504,
+        )
+
+    def test_calculates_power_of_two_texture_dimensions(self) -> None:
+        self.assertEqual(
+            GUI.calculate_full_size(8, 8, 256), (2048, 2048, True)
+        )
+        self.assertEqual(
+            GUI.calculate_full_size(4, 8, 256), (1024, 2048, True)
+        )
+
+    def test_flags_when_either_texture_dimension_is_not_a_power_of_two(self) -> None:
+        self.assertEqual(
+            GUI.calculate_full_size(3, 8, 256), (768, 2048, False)
+        )
+        self.assertEqual(
+            GUI.calculate_full_size(4, 8, 300), (1200, 2400, False)
+        )
+
+    def test_zero_and_negative_dimensions_are_not_powers_of_two(self) -> None:
+        self.assertFalse(GUI.is_power_of_two(0))
+        self.assertFalse(GUI.is_power_of_two(-2))
+
+
 class SourceClassificationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -260,6 +302,70 @@ class NativeSourceDialogTests(unittest.TestCase):
         self.assertEqual(self.app.cols_var.get(), 8)
         self.assertEqual(self.app.rows_var.get(), 8)
         self.assertIn("8 × 8 = 64", self.app.capacity_var.get())
+        self.assertEqual(
+            self.app.full_size_var.get(), "完整尺寸：2048 × 2048 pixel"
+        )
+        self.assertEqual(self.app.power_of_two_warning.winfo_manager(), "")
+
+    def test_main_content_uses_a_vertical_scroll_viewport(self) -> None:
+        self.assertIs(self.app.main_frame.master, self.app.viewport_canvas)
+        self.assertIsNotNone(self.app._viewport_window_id)
+        self.assertEqual(
+            self.app.viewport_scrollbar.cget("style"),
+            "Minimal.Vertical.TScrollbar",
+        )
+        scrollbar_layout = str(
+            self.app._style.layout("Minimal.Vertical.TScrollbar")
+        )
+        self.assertIn("thumb", scrollbar_layout.lower())
+        self.assertNotIn("arrow", scrollbar_layout.lower())
+        self.assertEqual(self.app.minsize(), (720, 360))
+
+        self.app.viewport_canvas.configure(height=240)
+        self.app.update_idletasks()
+        self.app._update_viewport_scroll_region()
+        bounds = self.app.viewport_canvas.bbox("all")
+
+        self.assertIsNotNone(bounds)
+        self.assertGreater(bounds[3] - bounds[1], 240)
+
+    def test_full_size_and_power_of_two_warning_update_immediately(self) -> None:
+        self.app.cols_var.set(3)
+        self.app.update_idletasks()
+
+        self.assertEqual(
+            self.app.full_size_var.get(), "完整尺寸：768 × 2048 pixel"
+        )
+        self.assertEqual(
+            self.app.power_of_two_warning.winfo_manager(), "grid"
+        )
+        self.assertEqual(
+            int(self.app.full_size_label.grid_info()["column"]), 2
+        )
+        self.assertEqual(
+            int(self.app.fit_label.grid_info()["column"]), 2
+        )
+        self.assertEqual(
+            int(self.app.power_of_two_warning.grid_info()["column"]), 3
+        )
+
+        self.app.cols_var.set(4)
+        self.app.update_idletasks()
+
+        self.assertEqual(
+            self.app.full_size_var.get(), "完整尺寸：1024 × 2048 pixel"
+        )
+        self.assertEqual(self.app.power_of_two_warning.winfo_manager(), "")
+
+        self.app.size_var.set(300)
+        self.app.update_idletasks()
+
+        self.assertEqual(
+            self.app.full_size_var.get(), "完整尺寸：1200 × 2400 pixel"
+        )
+        self.assertEqual(
+            self.app.power_of_two_warning.winfo_manager(), "grid"
+        )
 
     def test_theme_toggle_is_in_the_top_right_and_defaults_to_dark(self) -> None:
         grid = self.app.theme_toggle_canvas.grid_info()

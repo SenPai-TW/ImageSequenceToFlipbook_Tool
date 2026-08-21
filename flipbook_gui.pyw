@@ -30,7 +30,9 @@ try:
         VALID_EXTENSIONS,
         VIDEO_EXTENSIONS,
         collect_image_files,
+        make_image_preview,
         make_flipbook,
+        make_video_preview,
         make_video_flipbook,
         probe_video,
     )
@@ -45,6 +47,8 @@ except ModuleNotFoundError as exc:
     )
     root.destroy()
     raise SystemExit(1)
+
+from PIL import Image, ImageDraw, ImageTk
 
 
 MODE_LABELS = {
@@ -69,6 +73,9 @@ OVERLAY_FADE_OUT_MS = 100
 OVERLAY_REJECT_FADE_MS = 80
 OVERLAY_FRAME_MS = 20
 OVERLAY_PRIME_DELAY_MS = 50
+WORKSPACE_BREAKPOINT = 1000
+PREVIEW_DEBOUNCE_MS = 180
+PREVIEW_EDGE = 360
 FIT_LABELS = {
     "置中裁切": "crop",
     "拉伸成正方形": "stretch",
@@ -106,12 +113,30 @@ def calculate_window_height(
     return min(requested_height, available_height)
 
 
+def client_animations_enabled() -> bool:
+    """Respect the Windows preference for non-essential interface animation."""
+    if sys.platform != "win32":
+        return True
+    enabled = wintypes.BOOL()
+    try:
+        success = ctypes.windll.user32.SystemParametersInfoW(
+            0x1042, 0, ctypes.byref(enabled), 0
+        )
+    except (AttributeError, OSError):
+        return True
+    return bool(enabled.value) if success else True
+
+
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
 THEME_PALETTES = {
     THEME_DARK: {
         "window_bg": "#1F2328",
-        "section_bg": "#1F2328",
+        "section_bg": "#252A30",
+        "panel_alt": "#20252A",
+        "panel_border": "#343B43",
+        "preview_bg": "#15191D",
+        "success_text": "#82C7A5",
         "input_bg": "#171B20",
         "input_hover": "#20262C",
         "input_focus": "#252C33",
@@ -141,7 +166,11 @@ THEME_PALETTES = {
     },
     THEME_LIGHT: {
         "window_bg": "#F1F0ED",
-        "section_bg": "#F1F0ED",
+        "section_bg": "#FFFFFF",
+        "panel_alt": "#F7F6F3",
+        "panel_border": "#D9D7D2",
+        "preview_bg": "#E8E7E3",
+        "success_text": "#3D8563",
         "input_bg": "#E5E3DF",
         "input_hover": "#DEDBD6",
         "input_focus": "#D9D6D1",
@@ -441,10 +470,10 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                 # runtime is absent or cannot be loaded in an older install.
                 pass
         self.title(f"圖片序列／影片轉 Flipbook {APP_VERSION_TAG}")
-        initial_width = min(960, max(720, self.winfo_screenwidth() - 64))
+        initial_width = min(1180, max(760, self.winfo_screenwidth() - 64))
         initial_height = calculate_window_height(760, self.winfo_screenheight())
         self.geometry(f"{initial_width}x{initial_height}")
-        self.minsize(720, 360)
+        self.minsize(760, 560)
 
         self.theme_var = tk.StringVar(value=THEME_DARK)
         self.source_var = tk.StringVar()
@@ -469,6 +498,13 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.status_var = tk.StringVar(value="就緒")
         self.progress_var = tk.IntVar(value=0)
         self.progress_text_var = tk.StringVar(value="0%")
+        self.preview_title_var = tk.StringVar(value="等待來源")
+        self.preview_detail_var = tk.StringVar(value="選擇圖片或影片後會顯示低解析網格預覽")
+        self.preview_source_var = tk.StringVar(value="來源  —")
+        self.preview_capacity_var = tk.StringVar(value="容量  8 × 8 = 64")
+        self.preview_size_var = tk.StringVar(value="輸出  2048 × 2048 px")
+        self.preview_mode_var = tk.StringVar(value="RGBA · 延伸空白畫布")
+        self.preview_output_var = tk.StringVar(value="尚未選擇輸出位置")
         self.detail_canvas: tk.Canvas | None = None
         self.detail_text_id: int | None = None
         self.fit_detail_canvas: tk.Canvas | None = None
@@ -477,6 +513,18 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.viewport_canvas: tk.Canvas | None = None
         self.viewport_scrollbar: ttk.Scrollbar | None = None
         self.main_frame: ttk.Frame | None = None
+        self.workspace_frame: ttk.Frame | None = None
+        self.right_panel: ttk.Frame | None = None
+        self.preview_canvas: tk.Canvas | None = None
+        self.preview_image_id: int | None = None
+        self.preview_photo: ImageTk.PhotoImage | None = None
+        self._preview_source_image: Image.Image | None = None
+        self._preview_after_id: str | None = None
+        self._preview_request_id = 0
+        self._preview_animation_id: str | None = None
+        self._workspace_layout = ""
+        self._source_buttons: dict[str, ttk.Button] = {}
+        self._animations_enabled = client_animations_enabled()
         self._viewport_window_id: int | None = None
         self._theme_after_id: str | None = None
         self._theme_knob_x = 9.0
@@ -523,23 +571,23 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.after_idle(self._fit_initial_window)
         for variable in (
             self.cols_var, self.rows_var, self.size_var,
-            self.video_start_var, self.video_end_var,
+            self.video_start_var, self.video_end_var, self.fill_empty_var,
         ):
             variable.trace_add("write", self._settings_changed)
         self.mode_var.trace_add("write", self._mode_changed)
         self.fit_var.trace_add("write", self._fit_changed)
+        self.output_var.trace_add("write", self._output_changed)
+        self.preview_title_var.trace_add("write", self._preview_text_changed)
+        self.preview_detail_var.trace_add("write", self._preview_text_changed)
 
     def _configure_style(self) -> None:
         self._style = ttk.Style(self)
         self._style.theme_use("clam")
+        # Keep Chinese labels on one deliberate Windows UI face instead of
+        # relying on per-widget fallback from Segoe UI Variable. The display
+        # face is reserved for the English product title.
         self._font_family = "Microsoft JhengHei UI"
-
-        # Large stretched images made live window resizing expensive. Sections
-        # now use a lightweight borderless layout; rounded images are limited to
-        # the small input controls where their redraw cost is negligible.
-        self._style.layout("Section.TLabelframe", [
-            ("Labelframe.padding", {"sticky": "nsew"}),
-        ])
+        self._display_font_family = "Segoe UI Variable Display"
 
         # Extra transparent space on the right keeps the arrow away from the edge.
         self._combo_arrow_image = tk.PhotoImage(master=self, width=23, height=11)
@@ -597,10 +645,15 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         style.configure("TFrame", background=bg)
         style.configure("Panel.TFrame", background=panel)
         style.configure("PanelFlat.TFrame", background=panel)
+        style.configure("PanelAlt.TFrame", background=palette["panel_alt"])
+        style.configure(
+            "SectionAccent.TFrame", background=palette["primary_button"]
+        )
+        style.configure("Workspace.TFrame", background=bg)
         style.configure("TLabel", background=bg, foreground=text, font=base)
         style.configure(
             "Title.TLabel", background=bg, foreground=palette["heading_text"],
-            font=(family, 22, "bold"),
+            font=(self._display_font_family, 22, "bold"),
         )
         style.configure(
             "Muted.TLabel", background=bg, foreground=palette["secondary_text"],
@@ -608,15 +661,24 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         )
         style.configure("Panel.TLabel", background=panel, foreground=text, font=base)
         style.configure(
+            "PanelStrong.TLabel", background=panel,
+            foreground=palette["heading_text"], font=(family, 11, "bold"),
+        )
+        style.configure(
+            "PanelMeta.TLabel", background=panel,
+            foreground=palette["secondary_text"], font=(family, 9),
+        )
+        style.configure(
+            "Success.Panel.TLabel", background=panel,
+            foreground=palette["success_text"], font=(family, 9, "bold"),
+        )
+        style.configure(
             "Hint.Panel.TLabel", background=panel,
             foreground=palette["helper_text"], font=(family, 9),
         )
         style.configure(
-            "Section.TLabelframe", background=bg, foreground=text, borderwidth=0
-        )
-        style.configure(
-            "Section.TLabelframe.Label", background=bg,
-            foreground=palette["heading_text"], font=(family, 16, "bold"),
+            "SectionTitle.Panel.TLabel", background=panel,
+            foreground=palette["heading_text"], font=(family, 13, "bold"),
         )
         style.configure(
             "InfoTitle.Panel.TLabel", background=panel,
@@ -664,6 +726,21 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         )
         if self.viewport_canvas is not None:
             self.viewport_canvas.configure(bg=bg)
+        if self.preview_canvas is not None:
+            self.preview_canvas.configure(
+                bg=palette["preview_bg"],
+                highlightbackground=palette["panel_border"],
+            )
+            self.preview_canvas.itemconfigure(
+                getattr(self, "preview_title_id", 0), fill=palette["heading_text"]
+            )
+            self.preview_canvas.itemconfigure(
+                getattr(self, "preview_detail_id", 0), fill=palette["helper_text"]
+            )
+            if self._preview_source_image is not None:
+                self.after_idle(
+                    self._animate_preview_image, self._preview_source_image.copy()
+                )
 
         for button_style, vertical_padding in (
             ("TButton", 7), ("Browse.TButton", 7),
@@ -676,6 +753,24 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                 lightcolor=palette["secondary_button"],
                 darkcolor=palette["secondary_button"], relief="flat",
                 borderwidth=0, padding=(12, vertical_padding), font=base,
+            )
+        for source_style, selected in (
+            ("SourceTab.TButton", False), ("SourceTabSelected.TButton", True),
+        ):
+            tab_bg = palette["primary_button"] if selected else palette["panel_alt"]
+            tab_fg = palette["button_text"] if selected else palette["secondary_text"]
+            style.configure(
+                source_style, background=tab_bg, foreground=tab_fg,
+                bordercolor=tab_bg, lightcolor=tab_bg, darkcolor=tab_bg,
+                relief="flat", borderwidth=0, padding=(12, 9),
+                font=(family, 9, "bold"),
+            )
+            style.map(
+                source_style,
+                background=[
+                    ("pressed", palette["primary_button_pressed"] if selected else palette["input_hover"]),
+                    ("active", palette["primary_button_hover"] if selected else palette["input_hover"]),
+                ],
             )
             style.map(
                 button_style,
@@ -784,10 +879,10 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self._update_theme_toggle_colors()
 
     def _refresh_combobox_popdown_colors(self) -> None:
-        if not hasattr(self, "source_type_combo"):
+        if not hasattr(self, "mode_combo"):
             return
         palette = self._palette
-        for combo in (self.source_type_combo, self.mode_combo, self.fit_combo):
+        for combo in (self.mode_combo, self.fit_combo):
             try:
                 popdown = self.tk.call(
                     "ttk::combobox::PopdownWindow", str(combo)
@@ -863,7 +958,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.theme_var.set(theme)
         self._apply_theme_styles(THEME_PALETTES[theme])
         target_x = 25.0 if theme == THEME_LIGHT else 9.0
-        if not animate or self.theme_toggle_canvas is None:
+        if not animate or not self._animations_enabled or self.theme_toggle_canvas is None:
             self._set_theme_knob_position(target_x)
             return
 
@@ -892,28 +987,38 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         target = THEME_LIGHT if self.theme_var.get() == THEME_DARK else THEME_DARK
         self._set_theme(target, animate=True)
         return "break"
-    def _section(self, parent: ttk.Frame, title: str, row: int) -> ttk.Labelframe:
-        section = ttk.Labelframe(parent, text=title, style="Section.TLabelframe", padding=(0, 14, 0, 14))
-        section.grid(row=row, column=0, sticky="ew", pady=(0, 16))
+    def _section(self, parent: ttk.Frame, title: str, row: int) -> ttk.Frame:
+        section = ttk.Frame(
+            parent, style="Panel.TFrame", padding=(18, 14, 18, 16)
+        )
+        section.grid(row=row, column=0, sticky="ew", pady=(0, 14))
         section.columnconfigure(1, weight=1)
+
+        header = ttk.Frame(section, style="Panel.TFrame")
+        header.grid(
+            row=0, column=0, columnspan=4, sticky="ew", pady=(0, 14)
+        )
+        accent = ttk.Frame(
+            header, style="SectionAccent.TFrame", width=3, height=18
+        )
+        accent.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        accent.grid_propagate(False)
+        title_label = ttk.Label(
+            header, text=title, style="SectionTitle.Panel.TLabel"
+        )
+        title_label.grid(row=0, column=1, sticky="w")
+        section._section_title_label = title_label
+        section._section_header = header
         return section
 
     def _fit_initial_window(self) -> None:
-        """Size for the taller video layout, even when image mode starts selected."""
+        """Open as a wide workbench while respecting the usable screen area."""
         self.update_idletasks()
-        video_was_visible = self.video_options.winfo_ismapped()
-        if not video_was_visible:
-            self.video_options.grid()
-            self.update_idletasks()
-        requested = self.main_frame.winfo_reqheight() + 16
-        if not video_was_visible:
-            self.video_options.grid_remove()
-            self.update_idletasks()
-        height = calculate_window_height(requested, self.winfo_screenheight())
-        requested_width = self.main_frame.winfo_reqwidth() + 36
-        available_width = max(1, self.winfo_screenwidth() - 64)
-        width = min(max(720, requested_width), available_width)
+        height = calculate_window_height(760, self.winfo_screenheight())
+        available_width = max(760, self.winfo_screenwidth() - 64)
+        width = min(1180, available_width)
         self.geometry(f"{width}x{height}")
+        self._apply_workspace_layout(width)
         if self._overlay is not None and self._overlay_prime_after_id is None:
             # Let Windows map the final root geometry before creating the
             # always-mapped alpha-zero overlay. This still happens long before
@@ -923,6 +1028,22 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             )
 
     def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(self, style="Workspace.TFrame", padding=(24, 14, 24, 12))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(
+            header, text="Flipbook Texture Sheet Generator", style="Title.TLabel"
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header, text="本機影像序列與影片工作台", style="Muted.TLabel"
+        ).grid(row=1, column=0, sticky="w", pady=(1, 0))
+        theme_slot = ttk.Frame(header, style="Workspace.TFrame")
+        theme_slot.grid(row=0, column=1, rowspan=2, sticky="e")
+        self._build_theme_toggle(theme_slot)
+
         self.viewport_canvas = tk.Canvas(
             self, bg=self._palette["window_bg"], highlightthickness=0, bd=0,
         )
@@ -931,10 +1052,12 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             style="Minimal.Vertical.TScrollbar",
         )
         self.viewport_canvas.configure(yscrollcommand=self.viewport_scrollbar.set)
-        self.viewport_scrollbar.pack(side="right", fill="y")
-        self.viewport_canvas.pack(side="left", fill="both", expand=True)
+        self.viewport_canvas.grid(row=1, column=0, sticky="nsew")
+        self.viewport_scrollbar.grid(row=1, column=1, sticky="ns")
 
-        main = ttk.Frame(self.viewport_canvas, padding=(20, 14, 20, 12))
+        main = ttk.Frame(
+            self.viewport_canvas, style="Workspace.TFrame", padding=(24, 8, 24, 24)
+        )
         self.main_frame = main
         self._viewport_window_id = self.viewport_canvas.create_window(
             (0, 0), window=main, anchor="nw"
@@ -942,91 +1065,112 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         main.bind("<Configure>", self._update_viewport_scroll_region)
         self.viewport_canvas.bind("<Configure>", self._resize_viewport_content)
         self.bind("<MouseWheel>", self._scroll_viewport, add="+")
-        main.columnconfigure(0, weight=1)
+        main.columnconfigure(0, weight=7)
+        main.columnconfigure(1, weight=5)
 
-        ttk.Label(main, text="Flipbook Texture Sheet Generator", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(main, text="將圖片序列或影片轉成固定網格貼圖", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(2, 30))
-        self._build_theme_toggle(main)
+        left = ttk.Frame(main, style="Workspace.TFrame")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        left.columnconfigure(0, weight=1)
+        self.workspace_frame = left
 
-        source_section = self._section(main, "來源與輸出", 2)
+        source_section = self._section(left, "選擇來源", 0)
+        self.source_section = source_section
         source_section.columnconfigure(1, weight=0)
         source_section.columnconfigure(2, weight=1)
-        ttk.Label(source_section, text="來源：", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
-        self.source_type_combo = ttk.Combobox(
-            source_section, textvariable=self.source_type_var,
-            values=SOURCE_TYPES, state="readonly", width=24,
-        )
-        self.source_type_combo.grid(
-            row=0, column=1, sticky="ew", padx=(0, 10), pady=5
-        )
-        self.source_type_combo.bind(
-            "<<ComboboxSelected>>", self._source_type_changed
-        )
-        ttk.Entry(source_section, textvariable=self.source_var).grid(row=0, column=2, sticky="ew", pady=5)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_source, width=11, style="Browse.TButton").grid(row=0, column=3, padx=(10, 0), pady=5)
+        tabs = ttk.Frame(source_section, style="Panel.TFrame")
+        tabs.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        tab_labels = {
+            SOURCE_IMAGE_FILE: "序列圖片",
+            SOURCE_IMAGE_FOLDER: "圖片資料夾",
+            SOURCE_VIDEO: "影片 MP4 / MOV",
+        }
+        for column, source_kind in enumerate(
+            (SOURCE_IMAGE_FILE, SOURCE_IMAGE_FOLDER, SOURCE_VIDEO)
+        ):
+            tabs.columnconfigure(column, weight=1)
+            button = ttk.Button(
+                tabs, text=tab_labels[source_kind],
+                command=lambda kind=source_kind: self._select_source_type(kind),
+                style="SourceTab.TButton",
+            )
+            button.grid(
+                row=0, column=column, sticky="ew",
+                padx=(0, 5) if column < 2 else 0,
+            )
+            self._source_buttons[source_kind] = button
+        self._update_source_tabs()
 
-        ttk.Label(source_section, text="儲存位置：", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
-        ttk.Entry(source_section, textvariable=self.output_var).grid(row=1, column=1, columnspan=2, sticky="ew", pady=5)
-        ttk.Button(source_section, text="瀏覽…", command=self._choose_output, width=11, style="Browse.TButton").grid(row=1, column=3, padx=(10, 0), pady=5)
-        ttk.Label(source_section, textvariable=self.count_var, style="Hint.Panel.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(9, 0))
+        ttk.Label(source_section, text="來源路徑", style="Panel.TLabel").grid(
+            row=2, column=0, sticky="w", padx=(0, 12), pady=5
+        )
+        ttk.Entry(source_section, textvariable=self.source_var).grid(
+            row=2, column=1, columnspan=2, sticky="ew", pady=5
+        )
+        ttk.Button(
+            source_section, text="瀏覽…", command=self._choose_source,
+            width=11, style="Browse.TButton",
+        ).grid(row=2, column=3, padx=(10, 0), pady=5)
+        ttk.Label(
+            source_section, textvariable=self.count_var, style="Hint.Panel.TLabel",
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(9, 0))
 
-        self.video_options = self._section(main, "時間範圍", 3)
+        self.video_options = self._section(left, "時間範圍", 1)
         for column in (1, 3):
             self.video_options.columnconfigure(column, weight=1)
-        ttk.Label(self.video_options, text="開始秒數", style="Panel.TLabel").grid(row=0, column=0, padx=(0, 9), pady=2)
-        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_start_var).grid(row=0, column=1, sticky="ew", padx=(0, 20), pady=2)
-        ttk.Label(self.video_options, text="結束秒數", style="Panel.TLabel").grid(row=0, column=2, padx=(0, 9), pady=2)
-        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_end_var).grid(row=0, column=3, sticky="ew", pady=2)
+        ttk.Label(self.video_options, text="開始秒數", style="Panel.TLabel").grid(row=1, column=0, padx=(0, 9), pady=2)
+        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_start_var).grid(row=1, column=1, sticky="ew", padx=(0, 20), pady=2)
+        ttk.Label(self.video_options, text="結束秒數", style="Panel.TLabel").grid(row=1, column=2, padx=(0, 9), pady=2)
+        ttk.Spinbox(self.video_options, from_=0, to=999999, increment=0.1, textvariable=self.video_end_var).grid(row=1, column=3, sticky="ew", pady=2)
         self.video_options.grid_remove()
 
-        settings = self._section(main, "Flipbook 設定", 4)
+        settings = self._section(left, "Flipbook 設定", 2)
+        self.settings_section = settings
         settings.columnconfigure(1, weight=1)
         settings.columnconfigure(3, weight=1)
-        ttk.Label(settings, text="欄數 (Cols)", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
-        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.cols_var).grid(row=0, column=1, sticky="ew", padx=(0, 24), pady=5)
-        ttk.Label(settings, text="列數 (Rows)", style="Panel.TLabel").grid(row=0, column=2, sticky="w", padx=(0, 12), pady=5)
-        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.rows_var).grid(row=0, column=3, sticky="ew", pady=5)
-        ttk.Label(settings, text="單格尺寸", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
-        ttk.Spinbox(settings, from_=1, to=8192, textvariable=self.size_var).grid(row=1, column=1, sticky="ew", padx=(0, 24), pady=5)
-        ttk.Label(settings, text="px²", style="Hint.Panel.TLabel").grid(row=1, column=2, sticky="w", pady=5)
-        ttk.Label(settings, text="通道模式", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Label(settings, text="網格配置", style="InfoTitle.Panel.TLabel").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(0, 8)
+        )
+        ttk.Label(settings, text="欄數 (Cols)", style="Panel.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.cols_var).grid(row=2, column=1, sticky="ew", padx=(0, 24), pady=5)
+        ttk.Label(settings, text="列數 (Rows)", style="Panel.TLabel").grid(row=2, column=2, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=999, textvariable=self.rows_var).grid(row=2, column=3, sticky="ew", pady=5)
+        ttk.Label(settings, text="單格尺寸", style="Panel.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=5)
+        ttk.Spinbox(settings, from_=1, to=8192, textvariable=self.size_var).grid(row=3, column=1, sticky="ew", padx=(0, 24), pady=5)
+        ttk.Label(settings, text="px", style="Hint.Panel.TLabel").grid(row=3, column=2, sticky="w", pady=5)
+
+        self.capacity_label = ttk.Label(settings, textvariable=self.capacity_var, style="Hint.Panel.TLabel")
+        self.capacity_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 4))
+        self.full_size_label = ttk.Label(settings, textvariable=self.full_size_var, style="Hint.Panel.TLabel")
+        self.full_size_label.grid(row=4, column=2, columnspan=2, sticky="w", pady=(10, 4))
+        self.power_of_two_warning = ttk.Label(
+            settings, text="! 建議圖片寬 × 高尺寸皆為 2 的次方",
+            style="PowerOfTwoWarning.TLabel",
+        )
+
+        ttk.Separator(settings, orient="horizontal").grid(
+            row=6, column=0, columnspan=4, sticky="ew", pady=(14, 14)
+        )
+        ttk.Label(settings, text="影像處理", style="InfoTitle.Panel.TLabel").grid(
+            row=7, column=0, columnspan=4, sticky="w", pady=(0, 8)
+        )
+        ttk.Label(settings, text="通道模式", style="Panel.TLabel").grid(row=8, column=0, sticky="w", padx=(0, 12), pady=5)
         self.mode_combo = ttk.Combobox(
             settings, textvariable=self.mode_var, values=tuple(MODE_LABELS),
             state="readonly", width=22,
         )
-        self.mode_combo.grid(row=2, column=1, sticky="ew", padx=(0, 24), pady=5)
+        self.mode_combo.grid(row=8, column=1, sticky="ew", padx=(0, 24), pady=5)
         self.fit_label = ttk.Label(settings, text="畫面適配", style="Panel.TLabel")
-        self.fit_label.grid(row=2, column=2, sticky="w", padx=(0, 12), pady=5)
+        self.fit_label.grid(row=8, column=2, sticky="w", padx=(0, 12), pady=5)
         self.fit_combo = ttk.Combobox(
             settings, textvariable=self.fit_var, values=tuple(FIT_LABELS),
             state="readonly", width=22,
         )
-        self.fit_combo.grid(row=2, column=3, sticky="ew", pady=5)
-
-        self.capacity_label = ttk.Label(
-            settings, textvariable=self.capacity_var,
-            style="Hint.Panel.TLabel",
-        )
-        self.capacity_label.grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(12, 6)
-        )
-        self.full_size_label = ttk.Label(
-            settings, textvariable=self.full_size_var,
-            style="Hint.Panel.TLabel",
-        )
-        self.full_size_label.grid(
-            row=3, column=2, sticky="w", pady=(12, 6)
-        )
-        self.power_of_two_warning = ttk.Label(
-            settings,
-            text="! 建議圖片寬 × 高尺寸皆為 2 的次方",
-            style="PowerOfTwoWarning.TLabel",
-        )
+        self.fit_combo.grid(row=8, column=3, sticky="ew", pady=5)
         self.capacity_warning_line = ttk.Frame(
             settings, style="PanelFlat.TFrame"
         )
         self.capacity_warning_line.grid(
-            row=4, column=0, columnspan=4, sticky="ew", pady=(4, 0)
+            row=10, column=0, columnspan=4, sticky="ew", pady=(8, 0)
         )
         self.capacity_warning_line.grid_remove()
         self.warning_icon = ttk.Label(
@@ -1040,40 +1184,38 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         )
         self.warning_text.pack(side="left")
         self.fill_check = ttk.Checkbutton(settings, text="用最後一格補齊剩餘空格", variable=self.fill_empty_var)
-        self.fill_check.grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 9))
+        self.fill_check.grid(row=11, column=0, columnspan=4, sticky="w", pady=(4, 9))
         self.fill_check.grid_remove()
 
         self.detail_canvas = tk.Canvas(
             settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
-        self.detail_canvas.grid(row=6, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
+        self.detail_canvas.grid(row=9, column=0, columnspan=2, sticky="ew", padx=(0, 12), pady=(8, 0))
         self.detail_title_id = self.detail_canvas.create_text(
             0, 14, text="ⓘ  通道模式說明", anchor="nw",
             fill=self._palette["heading_text"],
-            font=("Microsoft JhengHei UI", 10, "bold"),
+            font=(self._font_family, 10, "bold"),
         )
         self.detail_text_id = self.detail_canvas.create_text(
             0, 40, text=self.detail_var.get(), anchor="nw",
             fill=self._palette["helper_text"],
-            font=("Microsoft JhengHei UI", 9), width=416,
+            font=(self._font_family, 9), width=416,
         )
         self.fit_detail_canvas = tk.Canvas(
             settings, width=420, height=90, bg=self._palette["section_bg"],
             highlightthickness=0, bd=0,
         )
-        self.fit_detail_canvas.grid(
-            row=6, column=2, columnspan=2, sticky="ew", pady=(8, 0)
-        )
+        self.fit_detail_canvas.grid(row=9, column=2, columnspan=2, sticky="ew", pady=(8, 0))
         self.fit_detail_title_id = self.fit_detail_canvas.create_text(
             0, 14, text="ⓘ  畫面適配說明", anchor="nw",
             fill=self._palette["heading_text"],
-            font=("Microsoft JhengHei UI", 10, "bold"),
+            font=(self._font_family, 10, "bold"),
         )
         self.fit_detail_text_id = self.fit_detail_canvas.create_text(
             0, 40, text=self.fit_detail_var.get(), anchor="nw",
             fill=self._palette["helper_text"],
-            font=("Microsoft JhengHei UI", 9), width=416,
+            font=(self._font_family, 9), width=416,
         )
         self.detail_canvas.bind(
             "<Configure>",
@@ -1088,11 +1230,63 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             ),
         )
 
-        action = self._section(main, "執行與處理狀態", 5)
+        action = ttk.Frame(main, style="Panel.TFrame", padding=(18, 16))
+        self.right_panel = action
+        action.grid(row=0, column=1, sticky="nsew")
         action.columnconfigure(0, weight=1)
-        action.columnconfigure(1, weight=0)
+        ttk.Label(action, text="輸出預覽", style="PanelStrong.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(action, text="低解析工作預覽，不會寫入磁碟", style="PanelMeta.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(2, 12)
+        )
+        self.preview_canvas = tk.Canvas(
+            action, width=360, height=260, bg=self._palette["preview_bg"],
+            highlightthickness=1, highlightbackground=self._palette["panel_border"], bd=0,
+        )
+        self.preview_canvas.grid(row=2, column=0, sticky="ew")
+        self.preview_image_id = self.preview_canvas.create_image(180, 130, anchor="center")
+        self.preview_title_id = self.preview_canvas.create_text(
+            180, 118, text=self.preview_title_var.get(), anchor="s",
+            fill=self._palette["heading_text"], font=(self._font_family, 12, "bold"),
+        )
+        self.preview_detail_id = self.preview_canvas.create_text(
+            180, 133, text=self.preview_detail_var.get(), anchor="n", width=290,
+            justify="center", fill=self._palette["helper_text"], font=(self._font_family, 9),
+        )
+        self.preview_canvas.bind("<Configure>", self._resize_preview_canvas)
+
+        summary = ttk.Frame(action, style="Panel.TFrame")
+        summary.grid(row=3, column=0, sticky="ew", pady=(14, 12))
+        summary.columnconfigure((0, 1), weight=1)
+        for row, (left_var, right_var) in enumerate((
+            (self.preview_source_var, self.preview_capacity_var),
+            (self.preview_size_var, self.preview_mode_var),
+        )):
+            ttk.Label(summary, textvariable=left_var, style="PanelMeta.TLabel").grid(
+                row=row, column=0, sticky="w", pady=2
+            )
+            ttk.Label(summary, textvariable=right_var, style="PanelMeta.TLabel").grid(
+                row=row, column=1, sticky="e", pady=2
+            )
+
+        ttk.Label(action, text="輸出位置", style="PanelStrong.TLabel").grid(
+            row=4, column=0, sticky="w", pady=(2, 6)
+        )
+        output_line = ttk.Frame(action, style="Panel.TFrame")
+        output_line.grid(row=5, column=0, sticky="ew")
+        output_line.columnconfigure(0, weight=1)
+        ttk.Entry(output_line, textvariable=self.output_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            output_line, text="瀏覽…", command=self._choose_output,
+            style="Browse.TButton", width=9,
+        ).grid(row=0, column=1, padx=(8, 0))
+        ttk.Label(action, textvariable=self.preview_output_var, style="PanelMeta.TLabel").grid(
+            row=6, column=0, sticky="w", pady=(6, 12)
+        )
+
         progress_line = ttk.Frame(action, style="PanelFlat.TFrame")
-        progress_line.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        progress_line.grid(row=7, column=0, sticky="ew", pady=(0, 8))
         progress_line.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(
             progress_line, mode="determinate", maximum=100,
@@ -1103,14 +1297,273 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             progress_line, textvariable=self.progress_text_var,
             style="Hint.Panel.TLabel", width=5, anchor="e",
         ).grid(row=0, column=1, padx=(10, 0))
-        ttk.Label(action, textvariable=self.status_var, style="Hint.Panel.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        self.run_button = ttk.Button(action, text="▦  執行生成 Flipbook 網格圖", style="Primary.TButton", command=self._start)
-        self.run_button.grid(row=2, column=0, sticky="ew", padx=(0, 10))
+        ttk.Label(action, textvariable=self.status_var, style="Hint.Panel.TLabel").grid(row=8, column=0, sticky="w", pady=(0, 10))
+        self.run_button = ttk.Button(action, text="產生 Flipbook 網格圖", style="Primary.TButton", command=self._start)
+        self.run_button.grid(row=9, column=0, sticky="ew")
         self.output_folder_button = ttk.Button(
             action, text="開啟輸出資料夾", command=self._open_last_output_folder,
             state="disabled", style="SecondaryAction.TButton", width=12,
         )
-        self.output_folder_button.grid(row=2, column=1, sticky="ew")
+        self.output_folder_button.grid(row=10, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            action, text="素材只在本機處理，不會上傳",
+            style="Success.Panel.TLabel",
+        ).grid(row=11, column=0, sticky="w", pady=(12, 0))
+        main.bind("<Configure>", self._workspace_resized, add="+")
+        self._apply_workspace_layout(1180)
+
+    def _select_source_type(self, source_kind: str) -> None:
+        target = SOURCE_TYPE_LABELS[source_kind]
+        if self.source_type_var.get() == target:
+            return
+        self.source_type_var.set(target)
+        self._source_type_changed()
+
+    def _update_source_tabs(self) -> None:
+        current = self._current_source_kind()
+        for source_kind, button in self._source_buttons.items():
+            button.configure(
+                style=(
+                    "SourceTabSelected.TButton"
+                    if source_kind == current else "SourceTab.TButton"
+                )
+            )
+
+    def _workspace_resized(self, event: object) -> None:
+        self._apply_workspace_layout(int(getattr(event, "width", 1)))
+
+    def _apply_workspace_layout(self, width: int) -> None:
+        if self.main_frame is None or self.workspace_frame is None or self.right_panel is None:
+            return
+        layout = "wide" if width >= WORKSPACE_BREAKPOINT else "narrow"
+        if layout == self._workspace_layout:
+            return
+        self._workspace_layout = layout
+        self.workspace_frame.grid_forget()
+        self.right_panel.grid_forget()
+        if layout == "wide":
+            self.main_frame.columnconfigure(0, weight=7)
+            self.main_frame.columnconfigure(1, weight=5)
+            self.workspace_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+            self.right_panel.grid(row=0, column=1, sticky="nsew")
+        else:
+            self.main_frame.columnconfigure(0, weight=1)
+            self.main_frame.columnconfigure(1, weight=0)
+            self.workspace_frame.grid(row=0, column=0, columnspan=2, sticky="nsew")
+            self.right_panel.grid(
+                row=1, column=0, columnspan=2, sticky="nsew", pady=(4, 0)
+            )
+        self.after_idle(self._update_viewport_scroll_region)
+
+    def _output_changed(self, *_args: object) -> None:
+        output = self.output_var.get().strip()
+        self.preview_output_var.set(
+            f"將儲存為 {Path(output).name}" if output else "尚未選擇輸出位置"
+        )
+
+    def _preview_text_changed(self, *_args: object) -> None:
+        if self.preview_canvas is None:
+            return
+        self.preview_canvas.itemconfigure(
+            self.preview_title_id, text=self.preview_title_var.get()
+        )
+        self.preview_canvas.itemconfigure(
+            self.preview_detail_id, text=self.preview_detail_var.get()
+        )
+
+    def _schedule_preview(self) -> None:
+        if self._closing or self.preview_canvas is None:
+            return
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
+        if self._preview_after_id is not None:
+            try:
+                self.after_cancel(self._preview_after_id)
+            except tk.TclError:
+                pass
+        self._preview_after_id = self.after(
+            PREVIEW_DEBOUNCE_MS, self._start_preview_request, request_id
+        )
+
+    def _start_preview_request(self, request_id: int) -> None:
+        self._preview_after_id = None
+        if request_id != self._preview_request_id or self._closing:
+            return
+        source = self.source_var.get().strip()
+        if not source or self._source_count < 1:
+            self._clear_preview()
+            return
+        try:
+            cols, rows = self.cols_var.get(), self.rows_var.get()
+            mode = MODE_LABELS[self.mode_var.get()]
+            frame_fit = FIT_LABELS[self.fit_var.get()]
+            fill_empty = self.fill_empty_var.get()
+            source_kind = self._current_source_kind()
+            start = float(self.video_start_var.get() or 0)
+            end_text = self.video_end_var.get().strip()
+            end = float(end_text) if end_text else None
+        except (tk.TclError, ValueError, KeyError):
+            self._preview_error(request_id, "目前設定無法建立預覽。")
+            return
+        self.preview_title_var.set("正在更新預覽")
+        self.preview_detail_var.set("正式輸出仍可照常執行")
+        threading.Thread(
+            target=self._preview_worker,
+            args=(
+                request_id, source, source_kind, cols, rows, mode,
+                fill_empty, start, end, frame_fit,
+            ),
+            daemon=True,
+        ).start()
+
+    def _preview_worker(
+        self,
+        request_id: int,
+        source: str,
+        source_kind: str,
+        cols: int,
+        rows: int,
+        mode: str,
+        fill_empty: bool,
+        start: float,
+        end: float | None,
+        frame_fit: str,
+    ) -> None:
+        try:
+            if source_kind == SOURCE_VIDEO:
+                result = make_video_preview(
+                    source, cols, rows, mode, fill_empty, start, end,
+                    frame_fit, PREVIEW_EDGE,
+                )
+            else:
+                result = make_image_preview(
+                    source, cols, rows, mode, fill_empty, frame_fit,
+                    PREVIEW_EDGE,
+                )
+        except Exception as exc:
+            if not self._closing:
+                try:
+                    self.after(0, self._preview_error, request_id, str(exc))
+                except (RuntimeError, tk.TclError):
+                    pass
+        else:
+            if not self._closing:
+                try:
+                    self.after(0, self._preview_ready, request_id, result)
+                except (RuntimeError, tk.TclError):
+                    pass
+
+    def _preview_ready(self, request_id: int, result: object) -> None:
+        if request_id != self._preview_request_id or self._closing:
+            return
+        self._preview_source_image = result.image.copy()
+        self.preview_title_var.set("")
+        self.preview_detail_var.set("")
+        suffix = " · 代表影格" if result.sampled else " · 完整縮圖"
+        self.preview_source_var.set(f"來源  {result.source_count} 格{suffix}")
+        self._animate_preview_image(self._preview_source_image)
+
+    def _preview_error(self, request_id: int, error: str) -> None:
+        if request_id != self._preview_request_id or self._closing:
+            return
+        self._preview_source_image = None
+        if self.preview_canvas is not None and self.preview_image_id is not None:
+            self.preview_canvas.itemconfigure(self.preview_image_id, image="")
+        self.preview_title_var.set("預覽暫時不可用")
+        self.preview_detail_var.set(error[:120])
+
+    def _clear_preview(self) -> None:
+        self._preview_source_image = None
+        self.preview_photo = None
+        if self.preview_canvas is not None and self.preview_image_id is not None:
+            self.preview_canvas.itemconfigure(self.preview_image_id, image="")
+        self.preview_title_var.set("等待來源")
+        self.preview_detail_var.set("選擇圖片或影片後會顯示低解析網格預覽")
+        self.preview_source_var.set("來源  —")
+
+    def _compose_preview_display(
+        self, source: Image.Image, width: int, height: int
+    ) -> Image.Image:
+        width = max(80, width)
+        height = max(80, height)
+        light = self.theme_var.get() == THEME_LIGHT
+        colors = ((232, 231, 227, 255), (214, 213, 209, 255)) if light else (
+            (22, 26, 30, 255), (32, 37, 42, 255)
+        )
+        display = Image.new("RGBA", (width, height), colors[0])
+        draw = ImageDraw.Draw(display)
+        checker = 14
+        for y in range(0, height, checker):
+            for x in range(0, width, checker):
+                if (x // checker + y // checker) % 2:
+                    draw.rectangle((x, y, x + checker - 1, y + checker - 1), fill=colors[1])
+        content = source.copy()
+        content.thumbnail((max(1, width - 28), max(1, height - 28)), Image.Resampling.LANCZOS)
+        display.alpha_composite(
+            content, ((width - content.width) // 2, (height - content.height) // 2)
+        )
+        return display
+
+    def _animate_preview_image(self, source: Image.Image) -> None:
+        if self.preview_canvas is None or self.preview_image_id is None:
+            return
+        if self._preview_animation_id is not None:
+            try:
+                self.after_cancel(self._preview_animation_id)
+            except tk.TclError:
+                pass
+        width = max(80, self.preview_canvas.winfo_width())
+        height = max(80, self.preview_canvas.winfo_height())
+        final = self._compose_preview_display(source, width, height)
+        if not self._animations_enabled:
+            self.preview_photo = ImageTk.PhotoImage(final, master=self)
+            self.preview_canvas.itemconfigure(
+                self.preview_image_id, image=self.preview_photo
+            )
+            return
+        background = Image.new("RGBA", final.size, self._palette["preview_bg"])
+        started = time.perf_counter()
+
+        def step() -> None:
+            if self._closing or self.preview_canvas is None:
+                self._preview_animation_id = None
+                return
+            progress = min(1.0, (time.perf_counter() - started) / 0.14)
+            eased = 1 - (1 - progress) ** 3
+            scale = 0.94 + 0.06 * eased
+            scaled = final.resize(
+                (max(1, round(final.width * scale)), max(1, round(final.height * scale))),
+                Image.Resampling.BILINEAR,
+            )
+            frame = background.copy()
+            frame.alpha_composite(
+                scaled, ((frame.width - scaled.width) // 2, (frame.height - scaled.height) // 2)
+            )
+            frame = Image.blend(background, frame, 0.35 + 0.65 * eased)
+            self.preview_photo = ImageTk.PhotoImage(frame, master=self)
+            self.preview_canvas.itemconfigure(self.preview_image_id, image=self.preview_photo)
+            self.preview_canvas.tag_raise(self.preview_title_id)
+            self.preview_canvas.tag_raise(self.preview_detail_id)
+            if progress < 1:
+                self._preview_animation_id = self.after(16, step)
+            else:
+                self._preview_animation_id = None
+
+        step()
+
+    def _resize_preview_canvas(self, event: object) -> None:
+        if self.preview_canvas is None:
+            return
+        width = max(80, int(getattr(event, "width", 360)))
+        height = max(80, int(getattr(event, "height", 300)))
+        self.preview_canvas.coords(self.preview_image_id, width / 2, height / 2)
+        self.preview_canvas.coords(self.preview_title_id, width / 2, height / 2 - 8)
+        self.preview_canvas.coords(self.preview_detail_id, width / 2, height / 2 + 8)
+        self.preview_canvas.itemconfigure(self.preview_detail_id, width=max(120, width - 70))
+        if self._preview_source_image is not None:
+            final = self._compose_preview_display(self._preview_source_image, width, height)
+            self.preview_photo = ImageTk.PhotoImage(final, master=self)
+            self.preview_canvas.itemconfigure(self.preview_image_id, image=self.preview_photo)
 
     def _choose_source(self) -> None:
         source_kind = self._current_source_kind()
@@ -1176,6 +1629,8 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         else:
             self.video_options.grid()
             self.count_var.set("請選擇 MP4 或 MOV 影片")
+        self._update_source_tabs()
+        self._clear_preview()
         self._update_capacity()
 
     def _update_viewport_scroll_region(self, _event: object | None = None) -> None:
@@ -1189,6 +1644,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             return
         width = max(1, int(getattr(event, "width", 1)))
         self.viewport_canvas.itemconfigure(self._viewport_window_id, width=width)
+        self._apply_workspace_layout(width)
 
     def _scroll_viewport(self, event: object) -> str | None:
         if self.viewport_canvas is None:
@@ -1218,6 +1674,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             self.video_options.grid_remove()
         else:
             self.video_options.grid()
+        self._update_source_tabs()
 
     def _apply_source(self, source: Path, source_kind: str, reset_output: bool = True) -> None:
         source = source.expanduser().resolve()
@@ -1476,6 +1933,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self._closing = True
         for callback_id in (
             self._theme_after_id,
+            self._preview_after_id, self._preview_animation_id,
             self._overlay_after_id, self._overlay_prime_after_id,
             self._overlay_sync_after_id, self._leave_after_id,
             self._shake_after_id, self._shake_queue_id,
@@ -1581,6 +2039,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.after_idle(self._update_capacity)
         if self._current_source_kind() == SOURCE_VIDEO:
             self.after_idle(self._update_video_range_count)
+        self._schedule_preview()
 
     def _mode_changed(self, *_args: object) -> None:
         descriptions = {
@@ -1589,6 +2048,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             "RGB Premultiplied": "將圖片合成至黑色背景，會遺失原本透明部分的RGB資訊。",
         }
         self._set_detail_text(descriptions.get(self.mode_var.get(), ""))
+        self._schedule_preview()
 
     def _set_detail_text(self, text: str) -> None:
         self.detail_var.set(text)
@@ -1600,6 +2060,7 @@ class FlipbookApp(tk.Tk, DndRootMixin):
         self.fit_detail_var.set(text)
         if self.fit_detail_canvas is not None and self.fit_detail_text_id is not None:
             self.fit_detail_canvas.itemconfigure(self.fit_detail_text_id, text=text)
+        self._schedule_preview()
 
     @staticmethod
     def _resize_detail_text(
@@ -1621,11 +2082,16 @@ class FlipbookApp(tk.Tk, DndRootMixin):
             self.full_size_var.set(
                 f"完整尺寸：{full_width} × {full_height} pixel"
             )
+            self.preview_capacity_var.set(f"容量  {cols} × {rows} = {capacity}")
+            self.preview_size_var.set(f"輸出  {full_width} × {full_height} px")
+            mode_short = self.mode_var.get().split("（", 1)[0]
+            fit_short = self.fit_var.get().replace("至正方形", "")
+            self.preview_mode_var.set(f"{mode_short} · {fit_short}")
             if uses_power_of_two_dimensions:
                 self.power_of_two_warning.grid_remove()
             elif not self.power_of_two_warning.winfo_manager():
                 self.power_of_two_warning.grid(
-                    row=3, column=3, sticky="e", padx=(16, 0), pady=(12, 6)
+                    row=5, column=0, columnspan=4, sticky="w", pady=(4, 0)
                 )
             if self._source_count > capacity:
                 if self._current_source_kind() != SOURCE_VIDEO:
@@ -1635,18 +2101,21 @@ class FlipbookApp(tk.Tk, DndRootMixin):
                 if not self.capacity_warning_line.winfo_manager():
                     self.capacity_warning_line.grid()
                 self.fill_check.grid_remove()
-                self.fill_empty_var.set(False)
+                if self.fill_empty_var.get():
+                    self.fill_empty_var.set(False)
             else:
                 self.capacity_warning_line.grid_remove()
                 if self._source_count > 0 and capacity > self._source_count:
                     self.fill_check.grid()
                 else:
                     self.fill_check.grid_remove()
-                    self.fill_empty_var.set(False)
+                    if self.fill_empty_var.get():
+                        self.fill_empty_var.set(False)
         except tk.TclError:
             self.capacity_var.set("欄數與列數必須是整數")
             self.full_size_var.set("完整尺寸：—")
             self.power_of_two_warning.grid_remove()
+        self._schedule_preview()
 
     def _start(self) -> None:
         if self._busy:

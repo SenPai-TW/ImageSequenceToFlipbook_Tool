@@ -128,6 +128,63 @@ class SequenceDetectionTests(unittest.TestCase):
         with Image.open(legacy_output) as legacy:
             self.assertEqual(legacy.getpixel((2, 0)), (255, 0, 0, 255))
 
+    def test_image_preview_is_in_memory_and_matches_grid_behavior(self) -> None:
+        first = self.folder / "preview_1.png"
+        second = self.folder / "preview_2.png"
+        Image.new("RGBA", (4, 2), (255, 0, 0, 255)).save(first)
+        Image.new("RGBA", (2, 4), (0, 255, 0, 128)).save(second)
+
+        result = flipbook.make_image_preview(
+            first, 2, 2, "RGBA", True, "pad", preview_edge=40
+        )
+
+        self.assertEqual(result.image.size, (40, 40))
+        self.assertEqual(result.source_count, 2)
+        self.assertEqual(result.frames_used, 2)
+        self.assertFalse(result.sampled)
+        self.assertEqual(result.image.getpixel((30, 30)), (0, 255, 0, 128))
+        self.assertFalse(any(self.folder.glob("*preview-output*")))
+
+    def test_image_preview_samples_large_sequences_without_losing_counts(self) -> None:
+        for index in range(10):
+            Image.new("RGBA", (2, 2), (index, 0, 0, 255)).save(
+                self.folder / f"sample_{index:02d}.png"
+            )
+
+        result = flipbook.make_image_preview(
+            self.folder, 5, 2, preview_edge=50, max_thumbnails=3
+        )
+
+        self.assertEqual(result.source_count, 10)
+        self.assertEqual(result.frames_used, 10)
+        self.assertTrue(result.sampled)
+
+    def test_video_preview_uses_bounded_representative_frames(self) -> None:
+        video = self.folder / "preview.mp4"
+        video.touch()
+        colors = iter(((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)))
+
+        with (
+            mock.patch.object(
+                flipbook, "_read_video_metadata",
+                return_value={"duration": 3.0, "fps": 10.0},
+            ),
+            mock.patch.object(
+                flipbook, "_read_video_frame_at",
+                side_effect=lambda _path, _time: Image.new("RGBA", (2, 2), next(colors)),
+            ) as read_frame,
+        ):
+            result = flipbook.make_video_preview(
+                video, 4, 2, start=0.0, end=3.0,
+                preview_edge=40, max_thumbnails=3,
+            )
+
+        self.assertEqual(result.image.size, (40, 20))
+        self.assertEqual(result.source_count, 30)
+        self.assertEqual(result.frames_used, 8)
+        self.assertTrue(result.sampled)
+        self.assertEqual(read_frame.call_count, 3)
+
     def test_rejects_missing_or_unsupported_file(self) -> None:
         self.create("notes.txt")
         with self.assertRaises(ValueError):

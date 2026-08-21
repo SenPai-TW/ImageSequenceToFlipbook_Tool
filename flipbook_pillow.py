@@ -6,10 +6,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageDraw, UnidentifiedImageError
 
 
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"}
@@ -19,6 +20,16 @@ FRAME_FIT_MODES = ("crop", "stretch", "pad")
 # Backward-compatible public name used by the existing video CLI/API.
 VIDEO_FIT_MODES = FRAME_FIT_MODES
 ProgressCallback = Callable[[int], None]
+
+
+@dataclass(frozen=True)
+class PreviewResult:
+    """Low-resolution, in-memory representation of a future flipbook."""
+
+    image: Image.Image
+    source_count: int
+    frames_used: int
+    sampled: bool
 
 
 class _ProgressReporter:
@@ -197,6 +208,213 @@ def fit_frame(
 
 # Preserve the original helper name for callers that imported it directly.
 fit_video_frame = fit_frame
+
+
+def _preview_geometry(cols: int, rows: int, preview_edge: int) -> tuple[int, int, int]:
+    if cols < 1 or rows < 1 or preview_edge < 32:
+        raise ValueError("cols, rows, and preview_edge must all be positive")
+    tile_size = max(1, preview_edge // max(cols, rows))
+    return tile_size, cols * tile_size, rows * tile_size
+
+
+def _preview_canvas(
+    cols: int,
+    rows: int,
+    preview_edge: int,
+    occupied: int,
+) -> tuple[Image.Image, int]:
+    tile_size, width, height = _preview_geometry(cols, rows, preview_edge)
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    capacity = cols * rows
+    occupied = max(0, min(capacity, occupied))
+    placeholder = (92, 108, 120, 72)
+
+    if capacity <= 4096:
+        inset = 1 if tile_size >= 4 else 0
+        for index in range(occupied):
+            left = (index % cols) * tile_size + inset
+            top = (index // cols) * tile_size + inset
+            draw.rectangle(
+                (
+                    left,
+                    top,
+                    (index % cols + 1) * tile_size - 1,
+                    (index // cols + 1) * tile_size - 1,
+                ),
+                fill=placeholder,
+            )
+    else:
+        full_rows, remainder = divmod(occupied, cols)
+        if full_rows:
+            draw.rectangle((0, 0, width - 1, full_rows * tile_size - 1), fill=placeholder)
+        if remainder:
+            draw.rectangle(
+                (0, full_rows * tile_size, remainder * tile_size - 1, (full_rows + 1) * tile_size - 1),
+                fill=placeholder,
+            )
+
+    if tile_size >= 5 and capacity <= 4096:
+        grid_color = (150, 166, 176, 58)
+        for column in range(1, cols):
+            x = column * tile_size
+            draw.line((x, 0, x, height), fill=grid_color)
+        for row in range(1, rows):
+            y = row * tile_size
+            draw.line((0, y, width, y), fill=grid_color)
+    return canvas, tile_size
+
+
+def _place_preview_tile(
+    canvas: Image.Image,
+    tile: Image.Image,
+    index: int,
+    cols: int,
+    tile_size: int,
+) -> None:
+    x = (index % cols) * tile_size
+    y = (index // cols) * tile_size
+    ImageDraw.Draw(canvas).rectangle(
+        (x, y, x + tile_size - 1, y + tile_size - 1), fill=(0, 0, 0, 0)
+    )
+    canvas.alpha_composite(tile, (x, y))
+
+
+def make_image_preview(
+    source: str | Path,
+    cols: int,
+    rows: int,
+    channel_mode: str = "RGBA",
+    fill_empty_with_last: bool = False,
+    image_fit: str = "pad",
+    preview_edge: int = 360,
+    max_thumbnails: int = 64,
+) -> PreviewResult:
+    """Build a bounded, in-memory preview without changing generation behavior."""
+    channel_mode = channel_mode.upper()
+    image_fit = image_fit.lower()
+    if channel_mode not in CHANNEL_MODES:
+        raise ValueError(f"channel_mode must be one of: {', '.join(CHANNEL_MODES)}")
+    if image_fit not in FRAME_FIT_MODES:
+        raise ValueError(f"image_fit must be one of: {', '.join(FRAME_FIT_MODES)}")
+    if max_thumbnails < 1:
+        raise ValueError("max_thumbnails must be at least 1")
+
+    files = collect_image_files(Path(source))
+    if not files:
+        raise ValueError(f"No supported images found in: {source}")
+    capacity = cols * rows
+    frames_used = min(len(files), capacity)
+    occupied = capacity if fill_empty_with_last and frames_used else frames_used
+    canvas, tile_size = _preview_canvas(cols, rows, preview_edge, occupied)
+    sampled = frames_used > max_thumbnails
+    indices = (
+        _even_indices(frames_used, max_thumbnails)
+        if sampled else list(range(frames_used))
+    )
+    last_tile: Image.Image | None = None
+    for index in indices:
+        path = files[index]
+        try:
+            with Image.open(path) as source_image:
+                source_image.load()
+                tile = source_image.convert("RGBA")
+        except (UnidentifiedImageError, OSError) as exc:
+            raise RuntimeError(f"無法建立預覽：Pillow 無法讀取 '{path}'：{exc}") from exc
+        tile = fit_frame(tile, tile_size, image_fit, channel_mode)
+        tile = apply_channel_mode(tile, channel_mode)
+        _place_preview_tile(canvas, tile, index, cols, tile_size)
+        if index == frames_used - 1:
+            last_tile = tile.copy()
+
+    if fill_empty_with_last and frames_used and last_tile is None:
+        with Image.open(files[frames_used - 1]) as source_image:
+            tile = fit_frame(source_image.convert("RGBA"), tile_size, image_fit, channel_mode)
+            last_tile = apply_channel_mode(tile, channel_mode)
+    if fill_empty_with_last and last_tile is not None:
+        fill_indices = range(frames_used, capacity)
+        if capacity - frames_used > max_thumbnails:
+            fill_indices = _even_indices(capacity - frames_used, max_thumbnails)
+            fill_indices = (frames_used + index for index in fill_indices)
+            sampled = True
+        for index in fill_indices:
+            _place_preview_tile(canvas, last_tile, index, cols, tile_size)
+    return PreviewResult(canvas, len(files), frames_used, sampled)
+
+
+def _read_video_frame_at(path: Path, timestamp: float) -> Image.Image:
+    imageio_ffmpeg = _load_imageio_ffmpeg()
+    reader = imageio_ffmpeg.read_frames(
+        str(path),
+        pix_fmt="rgb24",
+        input_params=["-ss", f"{max(0.0, timestamp):.6f}"],
+        output_params=["-frames:v", "1"],
+    )
+    try:
+        metadata = next(reader)
+        width, height = metadata.get("size", (0, 0))
+        frame_bytes = next(reader)
+    finally:
+        reader.close()
+    if width < 1 or height < 1:
+        raise RuntimeError("影片預覽沒有取得有效影格尺寸。")
+    return Image.frombytes("RGB", (int(width), int(height)), frame_bytes).convert("RGBA")
+
+
+def make_video_preview(
+    video_path: str | Path,
+    cols: int,
+    rows: int,
+    channel_mode: str = "RGBA",
+    fill_empty_with_last: bool = False,
+    start: float = 0.0,
+    end: float | None = None,
+    video_fit: str = "pad",
+    preview_edge: int = 360,
+    max_thumbnails: int = 12,
+) -> PreviewResult:
+    """Create a representative video preview using bounded random-access seeks."""
+    path = Path(video_path).expanduser().resolve()
+    if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("影片來源必須是存在的 MP4 或 MOV 檔案。")
+    metadata = _read_video_metadata(path)
+    duration = float(metadata["duration"])
+    fps = max(0.001, float(metadata.get("fps") or 0.0))
+    start = float(start)
+    end = duration if end is None else float(end)
+    if start < 0 or start >= end or end > duration + 0.001:
+        raise ValueError("影片預覽時間範圍無效。")
+    if max_thumbnails < 1:
+        raise ValueError("max_thumbnails must be at least 1")
+
+    source_count = max(1, round((end - start) * fps))
+    capacity = cols * rows
+    frames_used = min(source_count, capacity)
+    occupied = capacity if fill_empty_with_last and frames_used else frames_used
+    canvas, tile_size = _preview_canvas(cols, rows, preview_edge, occupied)
+    wanted = min(frames_used, max_thumbnails)
+    indices = _even_indices(frames_used, wanted)
+    sampled = frames_used > wanted
+    last_tile: Image.Image | None = None
+    span = max(0.0, end - start - min(0.001, (end - start) / 1000))
+    for index in indices:
+        fraction = 0.0 if frames_used <= 1 else index / (frames_used - 1)
+        frame = _read_video_frame_at(path, start + span * fraction)
+        tile = fit_frame(frame, tile_size, video_fit, channel_mode)
+        tile = apply_channel_mode(tile, channel_mode)
+        _place_preview_tile(canvas, tile, index, cols, tile_size)
+        if index == frames_used - 1:
+            last_tile = tile.copy()
+    if fill_empty_with_last and last_tile is not None:
+        fill_count = capacity - frames_used
+        fill_offsets = range(fill_count)
+        if fill_count > max_thumbnails:
+            fill_offsets = _even_indices(fill_count, max_thumbnails)
+            sampled = True
+        for offset in fill_offsets:
+            index = frames_used + offset
+            _place_preview_tile(canvas, last_tile, index, cols, tile_size)
+    return PreviewResult(canvas, source_count, frames_used, sampled)
 
 
 def _video_reader(path: Path, start: float, end: float) -> Iterator[object]:

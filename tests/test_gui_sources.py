@@ -199,7 +199,10 @@ class NativeSourceDialogTests(unittest.TestCase):
         self.assertEqual(GUI.FIT_LABELS[label], "pad")
 
     def test_frame_fit_is_permanent_and_only_time_range_toggles(self) -> None:
-        self.assertEqual(self.app.video_options.cget("text"), "時間範圍")
+        self.assertEqual(
+            self.app.video_options._section_title_label.cget("text"),
+            "時間範圍",
+        )
         self.assertTrue(self.app.fit_label.grid_info())
         self.assertTrue(self.app.fit_combo.grid_info())
         self.assertFalse(self.app.video_options.grid_info())
@@ -221,11 +224,11 @@ class NativeSourceDialogTests(unittest.TestCase):
         left_detail_grid = self.app.detail_canvas.grid_info()
         right_detail_grid = self.app.fit_detail_canvas.grid_info()
 
-        self.assertEqual((int(mode_grid["row"]), int(mode_grid["column"])), (2, 1))
+        self.assertEqual((int(mode_grid["row"]), int(mode_grid["column"])), (8, 1))
         self.assertEqual(
-            (int(fit_label_grid["row"]), int(fit_label_grid["column"])), (2, 2)
+            (int(fit_label_grid["row"]), int(fit_label_grid["column"])), (8, 2)
         )
-        self.assertEqual((int(fit_grid["row"]), int(fit_grid["column"])), (2, 3))
+        self.assertEqual((int(fit_grid["row"]), int(fit_grid["column"])), (8, 3))
         self.assertEqual(int(left_detail_grid["row"]), int(right_detail_grid["row"]))
         self.assertEqual(int(left_detail_grid["column"]), 0)
         self.assertEqual(int(right_detail_grid["column"]), 2)
@@ -254,6 +257,20 @@ class NativeSourceDialogTests(unittest.TestCase):
             self.app.detail_canvas.itemcget(self.app.detail_text_id, "font"),
             self.app.fit_detail_canvas.itemcget(self.app.fit_detail_text_id, "font"),
         )
+
+    def test_section_titles_are_inset_inside_panel_cards(self) -> None:
+        for section, expected_title in (
+            (self.app.source_section, "選擇來源"),
+            (self.app.video_options, "時間範圍"),
+            (self.app.settings_section, "Flipbook 設定"),
+        ):
+            with self.subTest(title=expected_title):
+                title_label = section._section_title_label
+                self.assertEqual(title_label.cget("text"), expected_title)
+                self.assertIs(title_label.master, section._section_header)
+                self.assertEqual(title_label.cget("style"), "SectionTitle.Panel.TLabel")
+                self.assertEqual(int(title_label.grid_info()["column"]), 1)
+                self.assertEqual(section.winfo_class(), "TFrame")
 
     def test_fit_description_updates_for_each_option(self) -> None:
         for label, description in GUI.FIT_DESCRIPTIONS.items():
@@ -319,7 +336,7 @@ class NativeSourceDialogTests(unittest.TestCase):
         )
         self.assertIn("thumb", scrollbar_layout.lower())
         self.assertNotIn("arrow", scrollbar_layout.lower())
-        self.assertEqual(self.app.minsize(), (720, 360))
+        self.assertEqual(self.app.minsize(), (760, 560))
 
         self.app.viewport_canvas.configure(height=240)
         self.app.update_idletasks()
@@ -346,7 +363,10 @@ class NativeSourceDialogTests(unittest.TestCase):
             int(self.app.fit_label.grid_info()["column"]), 2
         )
         self.assertEqual(
-            int(self.app.power_of_two_warning.grid_info()["column"]), 3
+            int(self.app.power_of_two_warning.grid_info()["column"]), 0
+        )
+        self.assertEqual(
+            int(self.app.power_of_two_warning.grid_info()["columnspan"]), 4
         )
 
         self.app.cols_var.set(4)
@@ -413,6 +433,48 @@ class NativeSourceDialogTests(unittest.TestCase):
         self.app._set_theme(GUI.THEME_DARK, animate=False)
         self.assertEqual(self.app.cget("background").upper(), dark["window_bg"])
         self.assertEqual(self.app._theme_knob_x, 9.0)
+
+    def test_source_modes_use_three_horizontal_workbench_tabs(self) -> None:
+        self.assertEqual(
+            set(self.app._source_buttons),
+            {GUI.SOURCE_IMAGE_FILE, GUI.SOURCE_IMAGE_FOLDER, GUI.SOURCE_VIDEO},
+        )
+        self.assertEqual(
+            self.app._source_buttons[GUI.SOURCE_IMAGE_FILE].cget("style"),
+            "SourceTabSelected.TButton",
+        )
+
+        self.app._select_source_type(GUI.SOURCE_VIDEO)
+
+        self.assertEqual(self.app._current_source_kind(), GUI.SOURCE_VIDEO)
+        self.assertEqual(
+            self.app._source_buttons[GUI.SOURCE_VIDEO].cget("style"),
+            "SourceTabSelected.TButton",
+        )
+
+    def test_workbench_switches_between_wide_and_stacked_layouts(self) -> None:
+        self.app._apply_workspace_layout(1180)
+        wide = self.app.right_panel.grid_info()
+        self.assertEqual((int(wide["row"]), int(wide["column"])), (0, 1))
+        self.assertEqual(self.app._workspace_layout, "wide")
+
+        self.app._apply_workspace_layout(760)
+        narrow = self.app.right_panel.grid_info()
+        self.assertEqual((int(narrow["row"]), int(narrow["column"])), (1, 0))
+        self.assertEqual(int(narrow["columnspan"]), 2)
+        self.assertEqual(self.app._workspace_layout, "narrow")
+
+    def test_stale_preview_result_cannot_replace_latest_request(self) -> None:
+        old = SimpleNamespace(
+            image=mock.Mock(), source_count=9, frames_used=8, sampled=False
+        )
+        self.app._preview_request_id = 2
+        self.app._animate_preview_image = mock.Mock()
+
+        self.app._preview_ready(1, old)
+
+        self.app._animate_preview_image.assert_not_called()
+        self.assertEqual(self.app.preview_title_var.get(), "等待來源")
 
     def test_progress_bar_is_determinate_and_resets_after_completion(self) -> None:
         self.assertEqual(str(self.app.progress.cget("mode")), "determinate")

@@ -26,6 +26,7 @@ Hard limits:
 - Maximum output pixels: 67,108,864 (`8192 * 8192`).
 - Maximum decoded width or height per source image: 8192 px.
 - Maximum decoded pixels per source image: 67,108,864.
+- Maximum grid capacity (`cols * rows`): 512 frames.
 - Maximum selected image count: 512.
 - Maximum individual image file size: 128 MiB.
 - Maximum combined image file size: 1 GiB.
@@ -94,7 +95,7 @@ Automated tests must cover:
 
 - 8192 × 8192 output is accepted when all other limits pass.
 - Width or height 8193 is rejected.
-- Unsafe multiplication, excessive total pixels, 513 files, a 128 MiB-plus file, and more than 1 GiB combined input are rejected.
+- Unsafe multiplication, excessive total pixels, grid capacity above 512, 513 files, a 128 MiB-plus file, and more than 1 GiB combined input are rejected.
 - A decoded image exceeding dimension or pixel limits is rejected before resize/output allocation.
 - Video controls are disabled and no video file chooser is rendered.
 - The production client manifest contains no FFmpeg client module or core asset.

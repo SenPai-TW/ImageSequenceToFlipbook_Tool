@@ -24,16 +24,6 @@ export interface VideoMetadata {
   codec?: string;
 }
 
-export interface VideoSource {
-  kind: "video";
-  file: File;
-  start: number;
-  end: number;
-  metadata?: VideoMetadata;
-}
-
-export type SourceInput = ImagesSource | VideoSource;
-
 export type ProcessingStage =
   | "idle"
   | "reading"
@@ -51,7 +41,7 @@ export interface ProgressUpdate {
 }
 
 export interface GenerateFlipbookRequest {
-  source: SourceInput;
+  source: ImagesSource;
   options: FlipbookOptions;
   signal?: AbortSignal;
   onProgress?: (update: ProgressUpdate) => void;

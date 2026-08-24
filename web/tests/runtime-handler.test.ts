@@ -1,96 +1,67 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { handleRequest, type RuntimeEnv } from "../worker/index";
+import { handleRequest } from "../worker/index";
 
-function runtimeEnv(body: string | null = "runtime-binary"): RuntimeEnv {
-  const object = body === null
-    ? null
-    : {
-        body: new Blob([body]).stream(),
-      httpEtag: '"runtime-etag"',
-      httpMetadata: { contentType: "application/wasm" },
-      writeHttpMetadata: (headers: Headers) => {
-        headers.set("Content-Type", "application/wasm");
-      },
-      };
-
+function testEnv(response = new Response("spa")): {
+  env: Parameters<typeof handleRequest>[1];
+  assetsFetch: ReturnType<typeof vi.fn>;
+} {
+  const assetsFetch = vi.fn(async () => response.clone());
   return {
-    FFMPEG_RUNTIME: {
-      get: async () => object,
-      head: async () => object,
-    },
-    ASSETS: {
-      fetch: async () => new Response("spa"),
-    },
-  } satisfies RuntimeEnv;
+    env: { ASSETS: { fetch: assetsFetch } } as unknown as Parameters<typeof handleRequest>[1],
+    assetsFetch,
+  };
 }
 
-describe("FFmpeg runtime endpoint", () => {
-  it("returns 503 while the optional R2 binding is disabled", async () => {
-    const response = await handleRequest(
-      new Request("https://example.com/runtime/ffmpeg/0.12.10/st/ffmpeg-core.wasm"),
-      {
-        ASSETS: {
-          fetch: async () => new Response("spa"),
-        },
+describe("public Worker request boundary", () => {
+  it.each(["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])(
+    "rejects %s before static assets",
+    async (method) => {
+      const { env, assetsFetch } = testEnv();
+      const response = await handleRequest(new Request("https://example.com/", { method }), env);
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(assetsFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not inspect the URL or body of a rejected upload attempt", async () => {
+    const { env, assetsFetch } = testEnv();
+    const request = {
+      method: "POST",
+      get url(): string {
+        throw new Error("URL must not be inspected");
       },
+      get body(): never {
+        throw new Error("Body must not be read");
+      },
+    } as unknown as Request;
+
+    expect((await handleRequest(request, env)).status).toBe(405);
+    expect(assetsFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["GET", "HEAD"])("returns 410 for every %s runtime request without R2 or assets", async (method) => {
+    const { env, assetsFetch } = testEnv();
+    const response = await handleRequest(
+      new Request("https://example.com/runtime/ffmpeg/anything", { method }),
+      env,
     );
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(410);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.text()).toBe("FFmpeg runtime is not configured");
+    expect(assetsFetch).not.toHaveBeenCalled();
   });
 
-  it("streams a versioned object with immutable cache metadata", async () => {
-    const response = await handleRequest(
-      new Request("https://example.com/runtime/ffmpeg/0.12.10/st/ffmpeg-core.wasm"),
-      runtimeEnv(),
-    );
+  it.each(["GET", "HEAD"])("forwards ordinary %s requests to static assets", async (method) => {
+    const { env, assetsFetch } = testEnv();
+    const request = new Request("https://example.com/tool/settings", { method });
+    const response = await handleRequest(request, env);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("application/wasm");
-    expect(response.headers.get("etag")).toBe('"runtime-etag"');
-    expect(response.headers.get("cache-control")).toContain("immutable");
-    expect(await response.text()).toBe("runtime-binary");
-  });
-
-  it("supports HEAD without returning the object body", async () => {
-    const response = await handleRequest(
-      new Request(
-        "https://example.com/runtime/ffmpeg/0.12.10/mt/ffmpeg-core.worker.js",
-        { method: "HEAD" },
-      ),
-      runtimeEnv(),
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("");
-  });
-
-  it("returns 404 for missing objects and 405 for writes", async () => {
-    const missing = await handleRequest(
-      new Request("https://example.com/runtime/ffmpeg/0.12.10/st/missing.wasm"),
-      runtimeEnv(null),
-    );
-    const write = await handleRequest(
-      new Request("https://example.com/runtime/ffmpeg/0.12.10/st/ffmpeg-core.wasm", {
-        method: "POST",
-      }),
-      runtimeEnv(),
-    );
-
-    expect(missing.status).toBe(404);
-    expect(write.status).toBe(405);
-    expect(write.headers.get("allow")).toBe("GET, HEAD");
-  });
-
-  it("never sends non-runtime requests to R2", async () => {
-    const response = await handleRequest(
-      new Request("https://example.com/tool/settings"),
-      runtimeEnv(),
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("spa");
+    expect(assetsFetch).toHaveBeenCalledOnce();
+    expect(assetsFetch).toHaveBeenCalledWith(request);
   });
 });

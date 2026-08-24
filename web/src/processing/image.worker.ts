@@ -6,7 +6,13 @@ import resize from "@jsquash/resize";
 import * as UTIF from "utif";
 
 import { extensionOf } from "../domain/flipbook";
+import {
+  validateDecodedImage,
+  validateImageFiles,
+  validateOutputGeometry,
+} from "../domain/resource-budget";
 import type { ChannelMode, FitMode, FlipbookOptions } from "../domain/types";
+import { dimensionsFromJpeg, dimensionsFromPng } from "./image-dimensions";
 import type { ImageWorkerRequest, ImageWorkerResponse } from "./image-protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -18,22 +24,33 @@ function post(message: ImageWorkerResponse, transfer: Transferable[] = []): void
 async function decodeImage(file: File): Promise<ImageData> {
   const extension = extensionOf(file.name);
   const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
   if (extension === ".png") {
+    const dimensions = dimensionsFromPng(bytes);
+    validateDecodedImage(dimensions.width, dimensions.height, file.name);
     const decoded = await decodePng(buffer, { bitDepth: 8 });
     if (decoded.data instanceof Uint16Array) {
       throw new Error(`${file.name} 無法轉換為 8-bit RGBA。`);
     }
+    validateDecodedImage(decoded.width, decoded.height, file.name);
     return decoded;
   }
   if (extension === ".jpg" || extension === ".jpeg") {
-    return decodeJpeg(buffer);
+    const dimensions = dimensionsFromJpeg(bytes);
+    validateDecodedImage(dimensions.width, dimensions.height, file.name);
+    const decoded = await decodeJpeg(buffer);
+    validateDecodedImage(decoded.width, decoded.height, file.name);
+    return decoded;
   }
   if (extension === ".tif" || extension === ".tiff") {
     const directories = UTIF.decode(buffer);
     const first = directories[0];
     if (first === undefined) throw new Error(`${file.name} 沒有可讀取的 TIFF 畫面。`);
+    validateDecodedImage(first.width, first.height, file.name);
     UTIF.decodeImage(buffer, first);
-    return new ImageData(new Uint8ClampedArray(UTIF.toRGBA8(first)), first.width, first.height);
+    const decoded = new ImageData(new Uint8ClampedArray(UTIF.toRGBA8(first)), first.width, first.height);
+    validateDecodedImage(decoded.width, decoded.height, file.name);
+    return decoded;
   }
   throw new Error(`${file.name} 不是支援的 PNG、JPEG 或 TIFF 圖片。`);
 }
@@ -142,12 +159,13 @@ function pasteTile(
 
 async function generate(request: ImageWorkerRequest): Promise<void> {
   const { id, files, options } = request;
-  const capacity = options.cols * options.rows;
+  const geometry = validateOutputGeometry(options);
+  validateImageFiles(files);
+  const { capacity, width, height } = geometry;
   const selected = files.slice(0, capacity);
   if (selected.length === 0) throw new Error("沒有可處理的圖片。");
 
-  const width = options.cols * options.tileSize;
-  const height = options.rows * options.tileSize;
+  validateOutputGeometry(options);
   const canvas = new Uint8ClampedArray(width * height * 4);
   if (options.channelMode !== "RGBA") {
     for (let offset = 3; offset < canvas.length; offset += 4) canvas[offset] = 255;

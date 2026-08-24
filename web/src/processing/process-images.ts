@@ -1,4 +1,5 @@
 import type { FlipbookOptions, ProgressUpdate } from "../domain/types";
+import { validateImageFiles, validateOutputGeometry } from "../domain/resource-budget";
 import type { ImageWorkerRequest, ImageWorkerResponse } from "./image-protocol";
 
 export interface ProcessImagesOptions {
@@ -15,6 +16,8 @@ export interface ProcessImagesResult {
 
 export async function processImages(input: ProcessImagesOptions): Promise<ProcessImagesResult> {
   if (input.signal?.aborted) throw new DOMException("處理已取消。", "AbortError");
+  validateOutputGeometry(input.options);
+  validateImageFiles(input.files);
   const request: ImageWorkerRequest = {
     id: crypto.randomUUID(),
     files: input.files,

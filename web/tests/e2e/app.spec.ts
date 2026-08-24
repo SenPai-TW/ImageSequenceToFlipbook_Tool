@@ -4,7 +4,7 @@ test("opens as a private, local-processing Flipbook tool", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Flipbook Texture Sheet Generator" })).toBeVisible();
-  await expect(page.getByText("素材只在這個瀏覽器分頁中處理，不會上傳")).toBeVisible();
+  await expect(page.getByText("圖片內容只在這個瀏覽器分頁處理，不會上傳或儲存")).toBeVisible();
   await expect(page.getByLabel("欄數")).toHaveValue("8");
   await expect(page.getByLabel("列數")).toHaveValue("8");
   await expect(
@@ -14,18 +14,23 @@ test("opens as a private, local-processing Flipbook tool", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("switches to video input and exposes the time range", async ({ page }) => {
+test("shows video as disabled while the security update is in progress", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("tab", { name: "影片" }).click();
 
-  await expect(page.getByLabel("影片檔案")).toBeAttached();
-  await expect(page.getByLabel("開始秒數")).toHaveValue("0");
-  await expect(page.getByLabel("結束秒數")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /影片.*安全性更新中/ })).toBeDisabled();
+  await expect(page.getByText("安全性更新中，暫停使用")).toBeVisible();
+  await expect(page.getByLabel("影片檔案")).toHaveCount(0);
+  await expect(page.getByLabel("開始秒數")).toHaveCount(0);
 });
 
 test("generates and downloads a PNG without uploading the source", async ({ page }) => {
   const networkBodies: Array<string | null> = [];
-  page.on("request", (request) => networkBodies.push(request.postData()));
+  const externalOrigins: string[] = [];
+  page.on("request", (request) => {
+    networkBodies.push(request.postData());
+    const origin = new URL(request.url()).origin;
+    if (origin !== "http://127.0.0.1:5173") externalOrigins.push(origin);
+  });
   await page.goto("/");
   await page.getByLabel("欄數").fill("1");
   await page.getByLabel("列數").fill("1");
@@ -39,6 +44,7 @@ test("generates and downloads a PNG without uploading the source", async ({ page
 
   await expect(page.getByRole("link", { name: "下載 flipbook.png" })).toBeVisible({ timeout: 30_000 });
   expect(networkBodies.every((body) => body === null)).toBe(true);
+  expect(externalOrigins).toEqual([]);
 });
 
 test("keeps unused RGB cells opaque black", async ({ page }) => {

@@ -4,14 +4,11 @@ import type {
   GenerateFlipbookResult,
   ProgressUpdate,
 } from "../domain/types";
+import { validateImageFiles, validateOutputGeometry } from "../domain/resource-budget";
 import { processImages } from "./process-images";
-import { extractVideoFrames } from "./video";
 
 function validateRequest(request: GenerateFlipbookRequest): void {
-  const { cols, rows, tileSize } = request.options;
-  if (![cols, rows, tileSize].every((value) => Number.isSafeInteger(value) && value >= 1)) {
-    throw new Error("欄數、列數與單格尺寸都必須是大於 0 的整數。");
-  }
+  validateOutputGeometry(request.options);
 }
 
 function forwardProgress(
@@ -29,37 +26,23 @@ export async function generateFlipbook(
   request: GenerateFlipbookRequest,
 ): Promise<GenerateFlipbookResult> {
   validateRequest(request);
+  const geometry = validateOutputGeometry(request.options);
   request.onProgress?.({ stage: "reading", percent: 0, message: "正在讀取本機素材…" });
-  const capacity = request.options.cols * request.options.rows;
+  const frames = supportedImageFiles(request.source.files);
+  if (frames.length === 0) throw new Error("請選擇 PNG、JPEG 或 TIFF 圖片。");
 
-  let frames: File[];
-  if (request.source.kind === "images") {
-    frames = supportedImageFiles(request.source.files);
-    if (frames.length === 0) throw new Error("請選擇 PNG、JPEG 或 TIFF 圖片。");
-  } else {
-    frames = await extractVideoFrames(
-      request.source.file,
-      request.source.metadata,
-      request.source.start,
-      request.source.end,
-      capacity,
-      {
-        signal: request.signal,
-        onProgress: forwardProgress(request, 0, 72),
-      },
-    );
-  }
+  validateImageFiles(frames);
 
   const result = await processImages({
     files: naturalSortFiles(frames),
     options: request.options,
     signal: request.signal,
-    onProgress: forwardProgress(request, request.source.kind === "video" ? 72 : 2, request.source.kind === "video" ? 27 : 97),
+    onProgress: forwardProgress(request, 2, 97),
   });
   request.onProgress?.({ stage: "encoding", percent: 100, message: "PNG 已完成。" });
   return {
     ...result,
-    width: request.options.cols * request.options.tileSize,
-    height: request.options.rows * request.options.tileSize,
+    width: geometry.width,
+    height: geometry.height,
   };
 }

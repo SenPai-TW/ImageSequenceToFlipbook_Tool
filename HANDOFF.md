@@ -1,6 +1,6 @@
 # ImageSequenceToFlipbook Tool — HANDOFF
 
-更新時間：2026-08-21（Asia/Taipei）
+更新時間：2026-08-26（Asia/Taipei）
 
 目前產品版本：**v3.2**
 
@@ -8,11 +8,11 @@
 
 - 工作區：`D:\GitHub\ImageSequenceToFlipbook_Tool`
 - Git 分支：`main`
-- 目前 HEAD：`6a8511c`（`重新設計UI介面`）。
-- 本機 `origin/main` 追蹤參照目前也指向 `6a8511c`；本次沒有重新連線查詢 GitHub，因此不把它當作即時遠端驗證。
-- v3.2 介面、預覽、版本與建置程式碼已包含在 `6a8511c`；目前沒有 `v3.2` tag。
-- `6a8511c` 建立時剛好遇到 HANDOFF 重寫中的暫時刪除狀態，因此該 commit 記錄了 `HANDOFF.md` 刪除；本文件已在工作樹恢復，但目前仍是未追蹤檔案。
-- 修改細節以 `git show 6a8511c` 與目前 `git status` 為準；不要使用 reset、checkout 或清理指令覆蓋本文件。
+- 目前 HEAD：`c9d7796`（`fix(web): harden local media processing boundaries`）。
+- 2026-08-26 已透過 GitHub 公開 API 即時確認：遠端 `main` 同樣指向完整 SHA `c9d7796a36bddd792f48f40652a85f71e1557cdf`，本機與 GitHub 一致。
+- v3.2 桌面工作台、預覽、版本與建置程式碼源自 `6a8511c`；其後 `c9d7796` 完成 Web 本機媒體處理邊界強化。
+- `HANDOFF.md` 已由 Git 追蹤；本次更新前工作樹乾淨，沒有未提交或未追蹤檔案。
+- 目前仍沒有 `v3.2` tag；最新 tag 為 `v3.1`。
 - 最新 Windows 成品：[`dist/FlipbookGenerator.exe`](./dist/FlipbookGenerator.exe)
   - 建置時間：2026-08-21 21:03:39
   - 大小：50,918,229 bytes
@@ -34,6 +34,13 @@
   - 明確封裝 Tcl/Tk 標準庫與 DLL，並在 frozen runtime 指向內附資源，繞過本機 Python 3.11 的 Tcl 偵測異常。
 - 測試已涵蓋預覽、fit、取樣、進度、過期結果隔離、工作台配置與內縮標題結構。
 
+## 最新 Web 安全狀態
+
+- `c9d7796` 將公開 Web Worker 收斂為只接受 `GET`／`HEAD` 的靜態資源服務；其他方法會在讀取 URL 或 body 前回覆 `405`。
+- 網頁版影片功能目前暫停，所有 `/runtime/ffmpeg/` 路徑固定回覆 `410`，正式 Worker 不暴露 R2 runtime binding。
+- 網頁版目前只開放圖片處理；圖片與輸出維持在瀏覽器分頁內處理，桌面 EXE 的 MP4／MOV 功能不受此變更影響。
+- Web 新增輸出尺寸、總像素、格數、檔案數與輸入容量限制，以及 PNG／JPEG 編碼尺寸預檢。
+
 ## 版本同步
 
 - 桌面版本來源：[`flipbook_version.py`](./flipbook_version.py) → `3.2`／`v3.2`。
@@ -44,17 +51,19 @@
 ## 已完成驗證
 
 - Python 編譯檢查通過：`flipbook_gui.pyw`、`flipbook_pillow.py`、`flipbook_version.py`。
-- 完整 Python 測試共 50 項：24 項通過，26 項 Tk GUI 測試因來源 Python 3.11 的 Tcl 初始化異常而跳過；測試整體結果為 `OK (skipped=26)`。
+- 2026-08-26 重新執行完整 Python 測試共 50 項：24 項通過，26 項 Tk GUI 測試因來源 Python 3.11 的 Tcl 初始化異常而跳過；測試整體結果為 `OK (skipped=26)`。
 - 版本同步測試通過：桌面 `v3.2`、Web `3.2.0`、README 與 HANDOFF 一致。
 - `git diff --check` 通過；只有既有的 LF／CRLF 轉換提醒。
 - v3.2 EXE 已使用 Python 3.11／PyInstaller 6.16.0 建置成功。
 - frozen EXE smoke test 彌補來源 Tk 測試限制：視窗可建立、標題正確且正常回應。
+- 目前未安裝 `web/node_modules`，因此 2026-08-26 未重新執行 Web 測試、TypeScript 檢查或 Web build；不得把桌面測試結果解讀為 Web 驗證完成。
 
 ## 已知限制
 
 - 本機 Python 3.11 的 Tcl/Tk 安裝可找到 `init.tcl`，但初始化仍回報無法使用，因此來源 GUI 測試會跳過；目前不要把 skipped 測試誤報為 GUI 全數通過。
 - PyInstaller 分析仍會顯示 `tkinter installation is broken`，但 spec 與 runtime hook 會手動封裝並指向 Tcl/Tk；成品 smoke test 已驗證可啟動。
 - 本次沒有修改正式輸出排序、品質、CLI 或影片抽幀規則。
+- 網頁版影片功能因安全性更新暫停；桌面 EXE 仍保留 MP4／MOV 影片轉換。
 
 ## 版本維護規則
 
@@ -70,8 +79,8 @@
 
 1. 人工操作圖片序列與影片各一次，確認預覽、生成、取消與輸出資料夾操作。
 2. 在 760px、1000px、1180px 與 125%／150% DPI 下做最終版面驗收。
-3. 由使用者決定是否把目前未追蹤的 `HANDOFF.md` 加回版本控制並建立後續 commit。
-4. 只有在重新驗證 GitHub 狀態並取得明確授權後，才建立 `v3.2` tag 或進行其他發布操作。
+3. 若要重新驗證 Web，需先取得明確授權安裝 `web` 依賴，再執行測試、TypeScript 檢查與 build。
+4. 由使用者決定是否提交本次 HANDOFF 更新；只有取得明確授權後，才建立 `v3.2` tag、push 或進行其他發布操作。
 
 ## Suggested skills
 

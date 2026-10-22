@@ -19,3 +19,6 @@ web/.wrangler/
 web/.runtime/
 web/playwright-report/
 web/test-results/
+
+# Local backups of nested Git metadata (not website source)
+.local-git-backups/
